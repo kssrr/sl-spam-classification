@@ -1,5 +1,5 @@
 ---
-title: "Take Home Exam"
+title: "Building neural network & competitor"
 editor: source
 date: today
 format: 
@@ -25,13 +25,9 @@ pre, code {
 
 ```{r}
 library(discrim)
-library(keras)
+library(keras3)
 library(tensorflow)
 library(tidymodels)
-
-# I had to setup a specific conda environment with keras & tensorflow installed
-# & then explicitly use that, otherwise _nothing_ would work OOTB:
-reticulate::use_condaenv("~/anaconda3/envs/keras")
 ```
 
 # Data
@@ -56,6 +52,22 @@ spam_split <- initial_validation_split(spam, prop = c(0.6, 0.2), strata = "spam"
 train <- training(spam_split)
 val <- validation(spam_split)
 test <- testing(spam_split)
+```
+
+# Preprocessing
+
+Fitting the recipe to the training data (to avoid leakage). Synthetic minority class oversampling, to get the same amount of examples for both classes, log-transforming[^log] Z-standardizing, dropping highly correlated features & those with near-zero variance:
+
+[^log]: Most of these features are word counts of some sort, likely with very skewed distributions.
+
+```{r}
+spam_rec <- 
+  recipe(spam ~ ., data = train) |> 
+  themis::step_smote(spam, over_ratio = 1, neighbors = 5) |> 
+  step_log(all_numeric_predictors(), offset = 1) |> 
+  step_range(all_numeric_predictors(), min = 0, max = 1) |> 
+  step_corr(all_numeric_predictors(), threshold = 0.9) |> 
+  step_nzv(all_numeric_predictors())
 ```
 
 # EDA
@@ -102,21 +114,21 @@ corrs |>
   )
 ```
 
-# Preprocessing
-
-Fitting the recipe to the training data (to avoid leakage). Synthetic minority class oversampling, to get the same amount of examples for both classes, log-transforming[^log] Z-standardizing, dropping highly correlated features & those with near-zero variance:
-
-[^log]: Most of these features are word counts of some sort, likely with very skewed distributions.
+PCA: checking if we can find some patterns in a transformed representation (also seeing if PCA as part of the preprocessing pipeline might make sense)
 
 ```{r}
-spam_rec <- 
-  recipe(spam ~ ., data = train) |> 
-  themis::step_smote(spam, over_ratio = 1, neighbors = 5) |> 
-  step_log(all_numeric_predictors(), offset = 1) |> 
-  step_range(all_numeric_predictors(), min = 0, max = 1) |> 
-  step_corr(all_numeric_predictors(), threshold = 0.9) |> 
-  step_nzv(all_numeric_predictors())
-  #step_pca(all_numeric_predictors(), num_comp = 10)
+spam_rec |> 
+  step_pca(all_numeric_predictors(), num_comp = 4) |> 
+  prep() |> 
+  bake(new_data = train) |> 
+  ggplot(aes(x = .panel_x, y = .panel_y, color = spam, fill = spam)) +
+  geom_point(alpha = 0.4, size = 0.5) +
+  ggforce::geom_autodensity(alpha = .3) +
+  ggforce::facet_matrix(vars(-spam), layer.diag = 2) + 
+  scale_color_brewer(palette = "Dark2", direction = -1) + 
+  scale_fill_brewer(palette = "Dark2", direction = -1) +
+  theme_minimal() +
+  labs(title = "Principal Component Analysis", fill = "", color = "")
 ```
 
 # Neural Network Classifier
@@ -147,19 +159,21 @@ X_test <- keras_test$X
 y_test <- keras_test$y
 ```
 
-**Model**: the default accessors for the regularization functions via keras have been broken in the backend for keras 3.8 and tensorflow 2.18 apparently, so we have to access them via tensorflow
+**Model**:
 
 ```{r}
 set.seed(42)
 
-mlp <- keras_model_sequential()
-
-mlp$add(layer_dense(units = 16, activation = "relu", kernel_regularizer = tf$keras$regularizers$l2(.01)))
-mlp$add(layer_dropout(rate = 0.2))
-mlp$add(layer_dense(units = 32, activation = "relu", kernel_regularizer = tf$keras$regularizers$l2(.01)))
-mlp$add(layer_dropout(rate = 0.2))
-mlp$add(layer_dense(units = 16, activation = "relu", kernel_regularizer = tf$keras$regularizers$l2(.01)))
-mlp$add(layer_dense(units = 1, activation = "sigmoid"))
+mlp <- keras_model_sequential(
+  layers = list(
+    layer_dense(units = 16, activation = "relu", kernel_regularizer = regularizer_l2(0.01)),
+    layer_dropout(rate = 0.25),
+    layer_dense(units = 32, activation = "relu", kernel_regularizer = regularizer_l2(0.01)),
+    layer_dropout(rate = 0.25),
+    layer_dense(units = 16, activation = "relu", kernel_regularizer = regularizer_l2(0.01)),
+    layer_dense(units = 1, activation = "sigmoid")
+  )
+)
 ```
 
 Compiling (ignore cuda errors):
@@ -167,62 +181,66 @@ Compiling (ignore cuda errors):
 ```{r}
 set.seed(42)
 
-mlp$compile(
-  optimizer = optimizer_adam(learning_rate = 0.001),
-  loss = "binary_crossentropy",
-  metrics = list(
-    metric_binary_accuracy(),
-    metric_precision(),
-    metric_recall(),
-    metric_auc()
+mlp |> 
+  compile(
+    optimizer = optimizer_adam(learning_rate = 0.001),
+    loss = "binary_crossentropy",
+    metrics = list(
+      metric_binary_accuracy(),
+      metric_precision(),
+      metric_recall(),
+      metric_auc()
+    )
   )
-)
 ```
 
-**Training**, this nearly drove me insane: R's `numeric` type is implicitly a `double` by default, which means Python reads it as `double`, but batch size, epochs etc. need to be integers.
+**Training**:
 
 ```{r}
 set.seed(42)
 
-history <- mlp$fit(
-  x = X_train,
-  y = y_train,
-  epochs = 100L,
-  batch_size = 32L,
-  validation_data = list(X_val, y_val),
-  callbacks = list(
-    # early stopping:
-    callback_early_stopping(
-      monitor = "val_loss",
-      patience = 5L,
-      restore_best_weights = TRUE 
-    ),
-    # schedule learning rate:
-    callback_reduce_lr_on_plateau(
-      monitor = "val_loss",
-      factor = 0.5,
-      patience = 3L,
-      min_lr = 0.00001
+history <- 
+  mlp |> 
+  fit(
+    x = X_train,
+    y = y_train,
+    epochs = 100L,
+    batch_size = 32L,
+    validation_data = list(X_val, y_val),
+    callbacks = list(
+      # early stopping:
+      callback_early_stopping(
+        monitor = "val_loss",
+        patience = 5L,
+        restore_best_weights = TRUE 
+      ),
+      # schedule learning rate:
+      callback_reduce_lr_on_plateau(
+        monitor = "val_loss",
+        factor = 0.5,
+        patience = 3L,
+        min_lr = 0.00001
+      )
     )
   )
-)
 ```
 
 Looking at the training progression:
 
 ```{r}
 training_prog <- 
-  history$history |> # laughable
+  history |> 
   as.data.frame() |> 
-  mutate(epoch = row_number()) |>
-  pivot_longer(cols = -epoch, names_to = "metric", values_to = "value")
+  tibble() |>
+  pivot_wider(values_from = "value", names_from = "metric") |> 
+  drop_na(loss)
 ```
+
+Loss curves:
 
 ```{r}
 training_prog |> 
-  filter(metric %in% c("loss", "val_loss")) |> 
-  mutate(metric = if_else(metric == "val_loss", "Validation", "Training")) |> 
-  ggplot(aes(x = epoch, y = value, color = metric)) +
+  ggplot(aes(x = epoch, y = loss, color = data)) +
   geom_line() +
   theme_minimal() +
   labs(
@@ -230,9 +248,47 @@ training_prog |>
     subtitle = "Binary cross-entropy loss on training and validation sets, over epochs",
     x = "Epochs",
     y = "Loss",
-    color = "Set"
+    color = "Data"
   )
 ```
+
+Validation metrics:
+
+```{r}
+training_prog |> 
+  select(-c(learning_rate, loss)) |> 
+  pivot_longer(-c(epoch, data), names_to = "metric", values_to = "value") |> 
+  ggplot(aes(x = epoch, y = value, color = data)) +
+  geom_line() +
+  facet_wrap(~metric) +
+  theme_minimal() +
+  labs(
+    title = "Training improvements",
+    subtitle = "Development of metrics over epochs, validation set",
+    x = "Epochs",
+    y = "",
+    color = "Data"
+  )
+```
+
+Collecting final metrics for training set:
+
+```{r}
+class_metrics <- metric_set(accuracy, precision, recall)
+
+mlp_metrics_train <- 
+  mlp$predict(X_train) |> 
+  round() |> 
+  as.vector() |> 
+  tibble(mlp_pred = _) |> 
+  bind_cols(train) |> 
+  mutate(mlp_pred = factor(if_else(mlp_pred == 1, "spam", "no spam"), levels = c("spam", "no spam"))) |> 
+  class_metrics(truth = spam, estimate = mlp_pred) |> 
+  select(-.estimator) |> 
+  pivot_wider(names_from = ".metric", values_from = ".estimate") |> 
+  mutate(name = "Neural Network")
+```
+
 
 Evaluating the model on the test set:
 
@@ -249,8 +305,6 @@ mlp_preds <-
 Metrics:
 
 ```{r}
-class_metrics <- metric_set(accuracy, precision, recall)
-
 mlp_preds |> 
   class_metrics(truth = spam, estimate = mlp_pred)
 ```
@@ -272,6 +326,8 @@ set.seed(42)
 
 folds <- vfold_cv(train, v = 10, strata = "spam")
 ```
+
+To select a proper competitor, I tune three "traditional" models:
 
 * Penalized logistic regression
 * Random Forest
@@ -431,7 +487,7 @@ models |>
 
 ## Uncertainty estimation for best competitors
 
-First, we are interested in accuracy only. Using bootstrapping to estimate uncertainty of the accuracy estimate. Each model is evaluated on 50 stratified resamples of the test set:
+First, we are interested in accuracy only. Using bootstrapping to estimate uncertainty of the accuracy estimate. Each model is evaluated on 50 stratified resamples of the train set:
 
 ```{r}
 set.seed(42)
@@ -478,7 +534,7 @@ bs_results_acc |>
   theme_minimal() +
   labs(
     title = "Uncertainty of accuracy estimates",
-    subtitle = "Competitor models",
+    subtitle = "Competitor models, training data",
     x = "",
     y = "Accuracy"
   ) +
@@ -486,9 +542,142 @@ bs_results_acc |>
   annotate(
     "text", 
     x = 0.67, 
-    y = mlp_metrics$accuracy + 0.002, 
+    y = mlp_metrics_train$accuracy + 0.002, 
     label = "Neural Network",
     color = "grey50",
     size = 4
   )
 ```
+
+Given we are classifying emails as spam, false positives (classifying "ham" emails as spam) are more costly, so we might want to optimize for that. Also estimating uncertainty:
+
+```{r}
+best_models_prec <- 
+  models |> 
+  mutate(
+    best_params = map(tuning_res, \(res) select_best(res, metric = "precision")),
+    model_best = map2(spec, best_params, \(mod, params) finalize_model(mod, params))
+  ) |> 
+  select(name, model_best) |> 
+  deframe()
+
+models_prec_wf <- workflow_set(
+  preproc = list("General Prep" = spam_rec),
+  models = best_models_prec
+)
+
+bs_results_prec <- workflow_map(
+  models_prec_wf,
+  resamples = resamples, 
+  verbose = TRUE,
+  control = control_resamples(save_pred = TRUE, verbose = TRUE),
+  metrics = metric_set(accuracy)
+)
+```
+
+Inspecting:
+
+```{r}
+bs_results_prec |> 
+  collect_metrics() |> 
+  mutate(
+    lower = mean - 1.96 * std_err,
+    upper = mean + 1.96 * std_err,
+    model = model |> gsub("_", " ", x  = _) |> stringr::str_to_title()
+  ) |> 
+  ggplot(aes(x = model, y = mean, color = model)) +
+  geom_hline(yintercept = mlp_metrics_train$precision, lty = "dashed", color = "grey") +
+  geom_point() +
+  geom_linerange(aes(ymin = lower, ymax = upper)) +
+  theme_minimal() +
+  labs(
+    title = "Uncertainty of precision estimates",
+    subtitle = "Competitor models, training data",
+    x = "",
+    y = "Precision"
+  ) +
+  theme(legend.position = "none") +
+  annotate(
+    "text", 
+    x = 0.67, 
+    y = mlp_metrics_train$precision + 0.002, 
+    label = "Neural Network",
+    color = "grey50",
+    size = 4
+  )
+```
+
+# Evaluating the best models on the test set
+
+```{r}
+test_eval <- 
+  models |> 
+  mutate(
+    # best models by accuracy & precision:
+    best_acc = map(tuning_res, \(res) select_best(res, metric = "accuracy")),
+    best_prec = map(tuning_res, \(res) select_best(res, metric = "precision")),
+    # fitting the models on the training set:
+    across(c(best_acc, best_prec), function(params) {
+      map2(workflow, params, function(wf, p) {
+        wf |> 
+          finalize_workflow(p) |> 
+          fit(train)
+      })
+    }),
+    # collecting predictions & metrics:
+    across(c(best_acc, best_prec), function(model) {
+      map(model, function(m) {
+        m |> 
+          augment(new_data = test) |> 
+          class_metrics(truth = spam, estimate = .pred_class) |> 
+          select(-.estimator) |> 
+          pivot_wider(names_from = ".metric", values_from = ".estimate")
+      })
+    })
+  )
+```
+
+Neural network (we already collected preds further above after being done with training):
+
+```{r}
+mlp_metrics_test <- 
+  mlp_preds |> 
+  class_metrics(truth = spam, estimate = mlp_pred) |> 
+  select(-.estimator) |> 
+  pivot_wider(names_from = ".metric", values_from = ".estimate") |> 
+  mutate(name = "Neural Network")
+```
+
+
+Best by accuracy:
+
+```{r}
+# Some markdown magic:
+mark_best <- function(x) {
+  map_chr(x, function(val) {
+    if (val == max(x))
+      return(paste0("**", as.character(round(val, 3)), "**"))
+    as.character(round(val, 3))
+  })
+}
+
+test_eval |> 
+  select(name, best_acc) |> 
+  unnest(best_acc) |> 
+  bind_rows(mlp_metrics_test) |> 
+  mutate(across(-name, mark_best)) |> 
+  knitr::kable()
+```
+
+Best by precision:
+
+```{r}
+test_eval |> 
+  select(name, best_prec) |> 
+  unnest(best_prec) |> 
+  bind_rows(mlp_metrics_test) |> 
+  select(name, precision) |> 
+  mutate(precision = mark_best(precision)) |> 
+  knitr::kable()
+```
+
