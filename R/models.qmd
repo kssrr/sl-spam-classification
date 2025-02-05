@@ -163,14 +163,15 @@ y_test <- keras_test$y
 
 ```{r}
 set.seed(42)
+tensorflow::tf$random$set_seed(42) 
 
 mlp <- keras_model_sequential(
   layers = list(
-    layer_dense(units = 16, activation = "relu", kernel_regularizer = regularizer_l2(0.01)),
-    layer_dropout(rate = 0.25),
-    layer_dense(units = 32, activation = "relu", kernel_regularizer = regularizer_l2(0.01)),
-    layer_dropout(rate = 0.25),
-    layer_dense(units = 16, activation = "relu", kernel_regularizer = regularizer_l2(0.01)),
+    layer_dense(units = 128, activation = "relu", kernel_regularizer = regularizer_l2(0.001)),
+    layer_dense(units = 64, activation = "relu", kernel_regularizer = regularizer_l2(0.001)),
+    layer_dense(units = 32, activation = "relu", kernel_regularizer = regularizer_l2(0.001)),
+    layer_dense(units = 16, activation = "relu", kernel_regularizer = regularizer_l2(0.001)),
+    layer_dropout(rate = 0.3),
     layer_dense(units = 1, activation = "sigmoid")
   )
 )
@@ -180,6 +181,7 @@ Compiling (ignore cuda errors):
 
 ```{r}
 set.seed(42)
+tensorflow::tf$random$set_seed(42) 
 
 mlp |> 
   compile(
@@ -198,13 +200,14 @@ mlp |>
 
 ```{r}
 set.seed(42)
+tensorflow::tf$random$set_seed(42) 
 
 history <- 
   mlp |> 
   fit(
     x = X_train,
     y = y_train,
-    epochs = 100L,
+    epochs = 250L,
     batch_size = 32L,
     validation_data = list(X_val, y_val),
     callbacks = list(
@@ -217,11 +220,12 @@ history <-
       # schedule learning rate:
       callback_reduce_lr_on_plateau(
         monitor = "val_loss",
-        factor = 0.5,
+        factor = 0.8,
         patience = 3L,
         min_lr = 0.00001
       )
-    )
+    ),
+    shuffle = FALSE
   )
 ```
 
@@ -513,7 +517,8 @@ bs_results_acc <- workflow_map(
   resamples = resamples, 
   verbose = TRUE,
   control = control_resamples(save_pred = TRUE, verbose = TRUE),
-  metrics = metric_set(accuracy)
+  metrics = metric_set(accuracy),
+  seed = 42 # internally uses parallelization with its own seed (or so I've heard)
 )
 ```
 
@@ -571,7 +576,8 @@ bs_results_prec <- workflow_map(
   resamples = resamples, 
   verbose = TRUE,
   control = control_resamples(save_pred = TRUE, verbose = TRUE),
-  metrics = metric_set(accuracy)
+  metrics = metric_set(accuracy),
+  seed = 42
 )
 ```
 
@@ -647,7 +653,6 @@ mlp_metrics_test <-
   pivot_wider(names_from = ".metric", values_from = ".estimate") |> 
   mutate(name = "Neural Network")
 ```
-
 
 Best by accuracy:
 
