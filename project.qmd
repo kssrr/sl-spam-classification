@@ -1,0 +1,494 @@
+---
+title: "Take Home Exam"
+editor: source
+date: today
+format: 
+  html:
+    embed-resources: true
+    message: false
+    warning: false
+    highlight-style: pygments
+editor_options: 
+  chunk_output_type: console
+---
+
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inconsolata:wght@200..900&display=swap');
+
+pre, code {
+  font-family: 'Inconsolata', monospace;
+  font-size: 18px !important;
+}
+</style>
+
+# Packages
+
+```{r}
+library(discrim)
+library(keras)
+library(tensorflow)
+library(tidymodels)
+
+# I had to setup a specific conda environment with keras & tensorflow installed
+# & then explicitly use that, otherwise _nothing_ would work OOTB:
+reticulate::use_condaenv("~/anaconda3/envs/keras")
+```
+
+# Data
+
+```{r}
+set.seed(42)
+
+spam <- readr::read_csv(here::here("data/spam.csv"))
+
+spam <- 
+  spam |> 
+  mutate(
+    spam = factor(
+      if_else(spam == 0, "no spam", "spam"),
+      ordered = TRUE,
+      levels = c("spam", "no spam")
+    )
+  )
+
+spam_split <- initial_validation_split(spam, prop = c(0.6, 0.2), strata = "spam")
+
+train <- training(spam_split)
+val <- validation(spam_split)
+test <- testing(spam_split)
+```
+
+# EDA
+
+Class distribution:
+
+```{r}
+train |> 
+  count(spam) |> 
+  ggplot(aes(x = spam, y = n, color = spam, fill = spam)) +
+  geom_col(alpha = 0.7) +
+  theme_minimal() +
+  labs(
+    title = "Class Distribution",
+    x = "", 
+    y = "N. of obs"
+  ) +
+  theme(legend.position = "none")
+```
+
+Feature correlations:
+
+```{r}
+corrs <- 
+  train |> 
+  select(-spam) |> 
+  cor() |> 
+  as.data.frame() |> 
+  rownames_to_column(var = "x1") |> 
+  tibble() |> 
+  pivot_longer(-x1, names_to = "x2", values_to = "val")
+
+corrs |> 
+  ggplot(aes(x = x1, y = x2, fill = val)) +
+  geom_tile() +
+  scale_fill_distiller(palette = "RdYlGn", direction = 1, limits = c(-1, 1)) +
+  theme(axis.text = element_blank(), axis.ticks = element_blank()) +
+  labs(
+    title = "Pairwise correlations", 
+    subtitle = "All features", 
+    fill = "Pearson's r", 
+    x = "",
+    y = ""
+  )
+```
+
+# Preprocessing
+
+Fitting the recipe to the training data (to avoid leakage). Synthetic minority class oversampling, to get the same amount of examples for both classes, log-transforming[^log] Z-standardizing, dropping highly correlated features & those with near-zero variance:
+
+[^log]: Most of these features are word counts of some sort, likely with very skewed distributions.
+
+```{r}
+spam_rec <- 
+  recipe(spam ~ ., data = train) |> 
+  themis::step_smote(spam, over_ratio = 1, neighbors = 5) |> 
+  step_log(all_numeric_predictors(), offset = 1) |> 
+  step_range(all_numeric_predictors(), min = 0, max = 1) |> 
+  step_corr(all_numeric_predictors(), threshold = 0.9) |> 
+  step_nzv(all_numeric_predictors())
+  #step_pca(all_numeric_predictors(), num_comp = 10)
+```
+
+# Neural Network Classifier
+
+Preparing the data (separate features & labels, bring into matrix format). We also need to apply the fitted preprocessing pipeline here for the data going into keras. `prep()` fits the recipe (on the training data, we specified this in the recipe), and `bake()` applies the transformation (equivalent to `.fit()` and `.transform()` in sklearn pipelines):
+
+```{r}
+keras_split <- function(set) {
+  df <- 
+    set |> 
+    mutate(spam = if_else(spam == "spam", 1, 0))
+  
+  list(
+    X = df |> select(-spam) |> as.matrix() |> unname(),
+    y = df |> pull(spam) |> as.matrix()
+  )
+}
+
+keras_train <- spam_rec |> prep() |> bake(new_data = train) |> keras_split()
+keras_val <-  spam_rec |> prep() |> bake(new_data = val) |> keras_split()
+keras_test <- spam_rec |> prep() |> bake(new_data = test) |> keras_split()
+
+X_train <- keras_train$X
+y_train <- keras_train$y
+X_val <- keras_val$X
+y_val <- keras_val$y
+X_test <- keras_test$X
+y_test <- keras_test$y
+```
+
+**Model**: the default accessors for the regularization functions via keras have been broken in the backend for keras 3.8 and tensorflow 2.18 apparently, so we have to access them via tensorflow
+
+```{r}
+set.seed(42)
+
+mlp <- keras_model_sequential()
+
+mlp$add(layer_dense(units = 16, activation = "relu", kernel_regularizer = tf$keras$regularizers$l2(.01)))
+mlp$add(layer_dropout(rate = 0.2))
+mlp$add(layer_dense(units = 32, activation = "relu", kernel_regularizer = tf$keras$regularizers$l2(.01)))
+mlp$add(layer_dropout(rate = 0.2))
+mlp$add(layer_dense(units = 16, activation = "relu", kernel_regularizer = tf$keras$regularizers$l2(.01)))
+mlp$add(layer_dense(units = 1, activation = "sigmoid"))
+```
+
+Compiling (ignore cuda errors):
+
+```{r}
+set.seed(42)
+
+mlp$compile(
+  optimizer = optimizer_adam(learning_rate = 0.001),
+  loss = "binary_crossentropy",
+  metrics = list(
+    metric_binary_accuracy(),
+    metric_precision(),
+    metric_recall(),
+    metric_auc()
+  )
+)
+```
+
+**Training**, this nearly drove me insane: R's `numeric` type is implicitly a `double` by default, which means Python reads it as `double`, but batch size, epochs etc. need to be integers.
+
+```{r}
+set.seed(42)
+
+history <- mlp$fit(
+  x = X_train,
+  y = y_train,
+  epochs = 100L,
+  batch_size = 32L,
+  validation_data = list(X_val, y_val),
+  callbacks = list(
+    # early stopping:
+    callback_early_stopping(
+      monitor = "val_loss",
+      patience = 5L,
+      restore_best_weights = TRUE 
+    ),
+    # schedule learning rate:
+    callback_reduce_lr_on_plateau(
+      monitor = "val_loss",
+      factor = 0.5,
+      patience = 3L,
+      min_lr = 0.00001
+    )
+  )
+)
+```
+
+Looking at the training progression:
+
+```{r}
+training_prog <- 
+  history$history |> # laughable
+  as.data.frame() |> 
+  mutate(epoch = row_number()) |>
+  pivot_longer(cols = -epoch, names_to = "metric", values_to = "value")
+```
+
+```{r}
+training_prog |> 
+  filter(metric %in% c("loss", "val_loss")) |> 
+  mutate(metric = if_else(metric == "val_loss", "Validation", "Training")) |> 
+  ggplot(aes(x = epoch, y = value, color = metric)) +
+  geom_line() +
+  theme_minimal() +
+  labs(
+    title = "Training curves",
+    subtitle = "Binary cross-entropy loss on training and validation sets, over epochs",
+    x = "Epochs",
+    y = "Loss",
+    color = "Set"
+  )
+```
+
+Evaluating the model on the test set:
+
+```{r}
+mlp_preds <- 
+  mlp$predict(X_test) |> 
+  round() |> 
+  as.vector() |> 
+  tibble(mlp_pred = _) |> 
+  bind_cols(test) |> 
+  mutate(mlp_pred = factor(if_else(mlp_pred == 1, "spam", "no spam"), levels = c("spam", "no spam")))
+```
+
+Metrics:
+
+```{r}
+class_metrics <- metric_set(accuracy, precision, recall)
+
+mlp_preds |> 
+  class_metrics(truth = spam, estimate = mlp_pred)
+```
+
+Confusion matrix:
+
+```{r}
+mlp_preds |> 
+  conf_mat(truth = spam, estimate = mlp_pred) |> 
+  autoplot(type = "heatmap")
+```
+
+# Competitors
+
+10-fold cross validation:
+
+```{r}
+set.seed(42)
+
+folds <- vfold_cv(train, v = 10, strata = "spam")
+```
+
+* Penalized logistic regression
+* Random Forest
+* Naive Bayes
+
+```{r}
+set.seed(42)
+
+log_spec <- logistic_reg(
+  mode = "classification",
+  engine = "glmnet",
+  penalty = tune(),
+  mixture = 1 # pure L1 regularization
+)
+
+log_grid <- tibble(penalty = 10^seq(-5, -1, length.out = 50))
+
+rf_spec <- rand_forest(
+  mode = "classification",
+  mtry = tune(),
+  trees = tune(),
+  min_n = tune()
+) |> set_engine("ranger", importance = "impurity") # variable importance
+
+rf_grid <- expand_grid(
+  mtry = c(4, 8, 12),
+  trees = c(100, 500, 1000),
+  min_n = c(5, 10, 20)
+)
+
+# For naive bayes, we disable kernel density estimation. This yields
+# Gaussian naive bayes, so we assume normally distributed features
+# (seems reasonable given our preprocessing)
+nb_spec <- naive_Bayes(
+  mode = "classification",
+  smoothness = tune()
+) |> set_engine("naivebayes", usekernel = FALSE)
+
+# just using raw probabilities (smoothing has no effect for Gaussian bayes
+# with only numerical features I believe), but also cross-validating
+nb_grid <- tibble(smoothness = 0)
+```
+
+Glueing together & tuning:
+
+```{r}
+set.seed(42)
+
+models <- tribble(
+  ~name,                 ~spec,    ~grid,
+  "Logistic Regression", log_spec, log_grid,
+  "Random Forest",       rf_spec,  rf_grid,
+  "Naive Bayes",         nb_spec,  nb_grid
+)
+
+models <- 
+  models |> 
+  mutate(
+    workflow = map(spec, \(m) workflow() |> add_recipe(spam_rec) |> add_model(m)),
+    tuning_res = map2(workflow, grid, function(wf, g) {
+      tune_grid(
+        wf, 
+        resamples = folds, # switch to `resamples` for bootstrapping instead
+        grid = g,
+        metrics = metric_set(accuracy, precision, recall, roc_auc),
+        control = control_grid(verbose = TRUE, save_pred = TRUE)
+      )
+    }),
+    metrics = map(tuning_res, collect_metrics)
+  )
+```
+
+## Tuning results
+
+First, adding 95% confidence intervals to metric estimates (estimated using the results collected across folds):
+
+```{r}
+models <- 
+  models |> 
+  mutate(
+    metrics = map(metrics, function(m) { 
+      m |> mutate(lower = mean - 1.96 * std_err, upper = mean + 1.96 * std_err)
+    })
+  )
+```
+
+### Logistic Regression
+
+Here, we tuned the `penalty` parameter:
+
+```{r}
+models |> 
+  filter(name == "Logistic Regression") |> 
+  dplyr::select(name, metrics) |> 
+  unnest(metrics) |> 
+  ggplot(aes(x = penalty, y = mean, fill = .metric)) +
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2) +
+  geom_point(aes(color = .metric)) +
+  geom_line(aes(color = .metric)) +
+  facet_wrap(~.metric, scales = "free_y") +
+  scale_x_log10() +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  labs(
+    title = "Logistic Regression", 
+    subtitle = "Tuning Results", 
+    x = expression(lambda),
+    y = "",
+    caption = "Note: x-axis is logarithmic"
+  )
+```
+
+### Random Forest
+
+```{r}
+models |> 
+  filter(name == "Random Forest") |> 
+  dplyr::select(name, metrics) |> 
+  unnest(metrics) |> 
+  mutate(min_n = factor(min_n, ordered = TRUE)) |> 
+  ggplot(aes(x = mtry, y = mean, group = min_n)) +
+  geom_ribbon(aes(ymin = lower, ymax = upper, fill = min_n), alpha = .1) +
+  geom_point(aes(color = min_n, )) +
+  geom_line(aes(color = min_n, )) +
+  facet_grid(vars(.metric), vars(trees), scale = "free_y") +
+  theme_minimal() +
+  labs(
+    title = "Random Forest",
+    subtitle = "Tuning Results, by number of trees",
+    x = "Number of randomly sampled features",
+    y = "",
+    fill = "Min. N in \nnode for split",
+    color = "Min. N in \nnode for split"
+  )
+```
+
+### Naive Bayes
+
+```{r}
+models |> 
+  filter(name == "Naive Bayes") |> 
+  dplyr::select(name, metrics) |> 
+  unnest(metrics) |> 
+  ggplot(aes(x = smoothness, y = mean, color = .metric)) +
+  geom_point() +
+  geom_linerange(aes(ymin = lower, ymax = upper)) +
+  facet_wrap(~.metric, nrow = 1) +
+  theme_minimal() +
+  theme(legend.position = "none", axis.text.x = element_blank()) +
+  labs(
+    title = "Naive Bayes",
+    subtitle = "Metric estimates across 10 folds",
+    x = "",
+    y = ""
+  )
+```
+
+## Uncertainty estimation for best competitors
+
+First, we are interested in accuracy only. Using bootstrapping to estimate uncertainty of the accuracy estimate. Each model is evaluated on 50 stratified resamples of the test set:
+
+```{r}
+set.seed(42)
+
+best_models_acc <- 
+  models |> 
+  mutate(
+    best_params = map(tuning_res, \(res) select_best(res, metric = "accuracy")),
+    model_best = map2(spec, best_params, \(mod, params) finalize_model(mod, params))
+  ) |> 
+  select(name, model_best) |> 
+  deframe()
+
+resamples <- bootstraps(train, times = 50, strata = "spam")
+
+models_acc_wf <- workflow_set(
+  preproc = list("General Prep" = spam_rec),
+  models = best_models_acc
+)
+
+bs_results_acc <- workflow_map(
+  models_acc_wf,
+  resamples = resamples, 
+  verbose = TRUE,
+  control = control_resamples(save_pred = TRUE, verbose = TRUE),
+  metrics = metric_set(accuracy)
+)
+```
+
+Investigating:
+
+```{r}
+bs_results_acc |> 
+  collect_metrics() |> 
+  mutate(
+    lower = mean - 1.96 * std_err,
+    upper = mean + 1.96 * std_err,
+    model = model |> gsub("_", " ", x  = _) |> stringr::str_to_title()
+  ) |> 
+  ggplot(aes(x = model, y = mean, color = model)) +
+  geom_hline(yintercept = mlp_metrics_train$accuracy, lty = "dashed", color = "grey") +
+  geom_point() +
+  geom_linerange(aes(ymin = lower, ymax = upper)) +
+  theme_minimal() +
+  labs(
+    title = "Uncertainty of accuracy estimates",
+    subtitle = "Competitor models",
+    x = "",
+    y = "Accuracy"
+  ) +
+  theme(legend.position = "none") +
+  annotate(
+    "text", 
+    x = 0.67, 
+    y = mlp_metrics$accuracy + 0.002, 
+    label = "Neural Network",
+    color = "grey50",
+    size = 4
+  )
+```
