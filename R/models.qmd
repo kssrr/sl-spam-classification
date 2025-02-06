@@ -54,6 +54,14 @@ val <- validation(spam_split)
 test <- testing(spam_split)
 ```
 
+Getting an overview:
+
+```{r}
+glimpse(train)
+```
+
+A lot of these seem to be word or character frequencies, so they will likely have very skewed distributions.
+
 # Preprocessing
 
 Fitting the recipe to the training data (to avoid leakage). Synthetic minority class oversampling, to get the same amount of examples for both classes, log-transforming[^log] Z-standardizing, dropping highly correlated features & those with near-zero variance:
@@ -162,26 +170,29 @@ y_test <- keras_test$y
 **Model**:
 
 ```{r}
-set.seed(42)
-tensorflow::tf$random$set_seed(42) 
+keras3::set_random_seed(42) 
+#^ the keras3 version (supposedly) sets a seed for the R session and the whole backend
 
 mlp <- keras_model_sequential(
   layers = list(
     layer_dense(units = 128, activation = "relu", kernel_regularizer = regularizer_l2(0.001)),
+    layer_dropout(rate = 0.25),
     layer_dense(units = 64, activation = "relu", kernel_regularizer = regularizer_l2(0.001)),
+    layer_dropout(rate = 0.25),
     layer_dense(units = 32, activation = "relu", kernel_regularizer = regularizer_l2(0.001)),
+    layer_dropout(rate = 0.25),
     layer_dense(units = 16, activation = "relu", kernel_regularizer = regularizer_l2(0.001)),
-    layer_dropout(rate = 0.3),
+    layer_dropout(rate = 0.25),
     layer_dense(units = 1, activation = "sigmoid")
   )
 )
 ```
 
-Compiling (ignore cuda errors):
+Compiling:
 
 ```{r}
-set.seed(42)
-tensorflow::tf$random$set_seed(42) 
+keras3::set_random_seed(42)
+# chunks are independent when rendering apparently, so again...
 
 mlp |> 
   compile(
@@ -199,8 +210,7 @@ mlp |>
 **Training**:
 
 ```{r}
-set.seed(42)
-tensorflow::tf$random$set_seed(42) 
+keras3::set_random_seed(42)
 
 history <- 
   mlp |> 
@@ -227,6 +237,18 @@ history <-
     ),
     shuffle = FALSE
   )
+```
+
+Details on the trained model:
+
+```{r}
+summary(mlp)
+```
+
+Visually:
+
+```{r}
+mlp |> plot(show_shapes = TRUE, show_trainable = TRUE)
 ```
 
 Looking at the training progression:
@@ -278,7 +300,7 @@ training_prog |>
 Collecting final metrics for training set:
 
 ```{r}
-class_metrics <- metric_set(accuracy, precision, recall)
+class_metrics <- metric_set(accuracy, precision, f_meas)
 
 mlp_metrics_train <- 
   mlp$predict(X_train) |> 
@@ -364,7 +386,6 @@ rf_grid <- expand_grid(
 
 # For naive bayes, we disable kernel density estimation. This yields
 # Gaussian naive bayes, so we assume normally distributed features
-# (seems reasonable given our preprocessing)
 nb_spec <- naive_Bayes(
   mode = "classification",
   smoothness = tune()
@@ -394,9 +415,9 @@ models <-
     tuning_res = map2(workflow, grid, function(wf, g) {
       tune_grid(
         wf, 
-        resamples = folds, # switch to `resamples` for bootstrapping instead
+        resamples = folds,
         grid = g,
-        metrics = metric_set(accuracy, precision, recall, roc_auc),
+        metrics = metric_set(accuracy, precision, f_meas),
         control = control_grid(verbose = TRUE, save_pred = TRUE)
       )
     }),
@@ -425,7 +446,7 @@ Here, we tuned the `penalty` parameter:
 ```{r}
 models |> 
   filter(name == "Logistic Regression") |> 
-  dplyr::select(name, metrics) |> 
+  select(name, metrics) |> 
   unnest(metrics) |> 
   ggplot(aes(x = penalty, y = mean, fill = .metric)) +
   geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2) +
@@ -440,7 +461,7 @@ models |>
     subtitle = "Tuning Results", 
     x = expression(lambda),
     y = "",
-    caption = "Note: x-axis is logarithmic"
+    caption = "Shaded area indicates 95% confidence interval.\nLogarithmic X-axis."
   )
 ```
 
@@ -449,7 +470,7 @@ models |>
 ```{r}
 models |> 
   filter(name == "Random Forest") |> 
-  dplyr::select(name, metrics) |> 
+  select(name, metrics) |> 
   unnest(metrics) |> 
   mutate(min_n = factor(min_n, ordered = TRUE)) |> 
   ggplot(aes(x = mtry, y = mean, group = min_n)) +
@@ -464,7 +485,8 @@ models |>
     x = "Number of randomly sampled features",
     y = "",
     fill = "Min. N in \nnode for split",
-    color = "Min. N in \nnode for split"
+    color = "Min. N in \nnode for split",
+    caption = "Shaded area indicates 95% confidence interval."
   )
 ```
 
@@ -473,7 +495,7 @@ models |>
 ```{r}
 models |> 
   filter(name == "Naive Bayes") |> 
-  dplyr::select(name, metrics) |> 
+  select(name, metrics) |> 
   unnest(metrics) |> 
   ggplot(aes(x = smoothness, y = mean, color = .metric)) +
   geom_point() +
@@ -483,7 +505,7 @@ models |>
   theme(legend.position = "none", axis.text.x = element_blank()) +
   labs(
     title = "Naive Bayes",
-    subtitle = "Metric estimates across 10 folds",
+    subtitle = "Metric estimates across 10 folds, with 95% confidence interval",
     x = "",
     y = ""
   )
@@ -491,57 +513,52 @@ models |>
 
 ## Uncertainty estimation for best competitors
 
-First, we are interested in accuracy only. Using bootstrapping to estimate uncertainty of the accuracy estimate. Each model is evaluated on 50 stratified resamples of the train set:
+After tuning, selecting the best models by (1) accuracy, and (2) precision, and showing their uncertainty across folds:
 
 ```{r}
-set.seed(42)
-
-best_models_acc <- 
+best_train <- 
   models |> 
   mutate(
-    best_params = map(tuning_res, \(res) select_best(res, metric = "accuracy")),
-    model_best = map2(spec, best_params, \(mod, params) finalize_model(mod, params))
+    # best models by accuracy & precision:
+    best_acc = map(tuning_res, \(res) select_best(res, metric = "accuracy")),
+    best_prec = map(tuning_res, \(res) select_best(res, metric = "precision")),
+    # metrics only for best models:
+    across(c(best_acc, best_prec), function(params) {
+      map2(tuning_res, params, function(res, p) {
+        res |> 
+          collect_metrics() |> 
+          filter(.config == p$.config)
+      })
+    }, .names = "{col}_train"),
+    # add 95% confidence interval:
+    across(ends_with("_train"), function(metrics) {
+      map(metrics, function(d) {
+        d |> 
+          mutate(lower = mean - 1.96 * std_err, upper = mean + 1.96 * std_err)
+      })
+    })
   ) |> 
-  select(name, model_best) |> 
-  deframe()
-
-resamples <- bootstraps(train, times = 50, strata = "spam")
-
-models_acc_wf <- workflow_set(
-  preproc = list("General Prep" = spam_rec),
-  models = best_models_acc
-)
-
-bs_results_acc <- workflow_map(
-  models_acc_wf,
-  resamples = resamples, 
-  verbose = TRUE,
-  control = control_resamples(save_pred = TRUE, verbose = TRUE),
-  metrics = metric_set(accuracy),
-  seed = 42 # internally uses parallelization with its own seed (or so I've heard)
-)
+  select(name, starts_with("best"))
 ```
 
-Investigating:
+Accuracy:
 
 ```{r}
-bs_results_acc |> 
-  collect_metrics() |> 
-  mutate(
-    lower = mean - 1.96 * std_err,
-    upper = mean + 1.96 * std_err,
-    model = model |> gsub("_", " ", x  = _) |> stringr::str_to_title()
-  ) |> 
-  ggplot(aes(x = model, y = mean, color = model)) +
+best_train |> 
+  select(name, best_acc_train) |> 
+  unnest(best_acc_train) |> 
+  filter(.metric == "accuracy") |> 
+  ggplot(aes(x = name, y = mean, color = name)) +
   geom_hline(yintercept = mlp_metrics_train$accuracy, lty = "dashed", color = "grey") +
   geom_point() +
   geom_linerange(aes(ymin = lower, ymax = upper)) +
   theme_minimal() +
   labs(
     title = "Uncertainty of accuracy estimates",
-    subtitle = "Competitor models, training data",
+    subtitle = "Competitor models, training data\nEstimated on 10 folds",
     x = "",
-    y = "Accuracy"
+    y = "Accuracy",
+    caption = "Bars indicate 95% confidence interval"
   ) +
   theme(legend.position = "none") +
   annotate(
@@ -554,107 +571,88 @@ bs_results_acc |>
   )
 ```
 
-Given we are classifying emails as spam, false positives (classifying "ham" emails as spam) are more costly, so we might want to optimize for that. Also estimating uncertainty:
+Precision (classifying emails as spam, false positives - i.e. mistakenly labeling "ham" emails as spam - are more costly):
 
 ```{r}
-best_models_prec <- 
-  models |> 
-  mutate(
-    best_params = map(tuning_res, \(res) select_best(res, metric = "precision")),
-    model_best = map2(spec, best_params, \(mod, params) finalize_model(mod, params))
-  ) |> 
-  select(name, model_best) |> 
-  deframe()
-
-models_prec_wf <- workflow_set(
-  preproc = list("General Prep" = spam_rec),
-  models = best_models_prec
-)
-
-bs_results_prec <- workflow_map(
-  models_prec_wf,
-  resamples = resamples, 
-  verbose = TRUE,
-  control = control_resamples(save_pred = TRUE, verbose = TRUE),
-  metrics = metric_set(accuracy),
-  seed = 42
-)
-```
-
-Inspecting:
-
-```{r}
-bs_results_prec |> 
-  collect_metrics() |> 
-  mutate(
-    lower = mean - 1.96 * std_err,
-    upper = mean + 1.96 * std_err,
-    model = model |> gsub("_", " ", x  = _) |> stringr::str_to_title()
-  ) |> 
-  ggplot(aes(x = model, y = mean, color = model)) +
-  geom_hline(yintercept = mlp_metrics_train$precision, lty = "dashed", color = "grey") +
+best_train |> 
+  select(name, best_prec_train) |> 
+  unnest(best_prec_train) |> 
+  filter(.metric == "precision") |> 
+  ggplot(aes(x = name, y = mean, color = name)) +
+  geom_hline(yintercept = mlp_metrics_train$accuracy, lty = "dashed", color = "grey") +
   geom_point() +
   geom_linerange(aes(ymin = lower, ymax = upper)) +
   theme_minimal() +
   labs(
     title = "Uncertainty of precision estimates",
-    subtitle = "Competitor models, training data",
+    subtitle = "Competitor models, training data\nEstimated on 10 folds",
     x = "",
-    y = "Precision"
+    y = "Precision",
+    caption = "Bars indicate 95% confidence interval"
   ) +
   theme(legend.position = "none") +
   annotate(
     "text", 
     x = 0.67, 
-    y = mlp_metrics_train$precision + 0.002, 
+    y = mlp_metrics_train$accuracy + 0.002, 
     label = "Neural Network",
     color = "grey50",
     size = 4
   )
 ```
 
-# Evaluating the best models on the test set
+# Random Forest vs. Neural Network on test set
 
 ```{r}
-test_eval <- 
-  models |> 
+rf_res <- models |> filter(name == "Random Forest")
+rf_tuning_res <- rf_res |> pull(tuning_res) |> pluck(1)
+rf_wf <- rf_res |> pull(workflow) |> pluck(1)
+```
+
+Considering the best random forest model by precision (most important metric here):
+
+```{r}
+rf_fit_prec <- 
+  rf_wf |> 
+  finalize_workflow(select_best(rf_tuning_res, metric = "precision")) |>
+  fit(train)
+```
+
+Test predictions for both (plus predicted class probability):
+
+```{r}
+nn_preds <- 
+  mlp |> 
+  predict(X_test) |> 
+  as.vector() |> 
+  tibble(.pred_spam = _) |> 
   mutate(
-    # best models by accuracy & precision:
-    best_acc = map(tuning_res, \(res) select_best(res, metric = "accuracy")),
-    best_prec = map(tuning_res, \(res) select_best(res, metric = "precision")),
-    # fitting the models on the training set:
-    across(c(best_acc, best_prec), function(params) {
-      map2(workflow, params, function(wf, p) {
-        wf |> 
-          finalize_workflow(p) |> 
-          fit(train)
-      })
-    }),
-    # collecting predictions & metrics:
-    across(c(best_acc, best_prec), function(model) {
-      map(model, function(m) {
-        m |> 
-          augment(new_data = test) |> 
-          class_metrics(truth = spam, estimate = .pred_class) |> 
-          select(-.estimator) |> 
-          pivot_wider(names_from = ".metric", values_from = ".estimate")
-      })
-    })
-  )
+    .pred_no_spam = 1 - .pred_spam, 
+    .pred_class = round(.pred_spam),
+    .pred_class = factor(
+      if_else(.pred_class == 1, "spam", "no spam"),
+      ordered = TRUE,
+      levels = c("spam", "no spam")
+    ),
+    model = "Neural Network"
+  ) |> 
+  bind_cols(test |> select(actual = spam))
+
+rf_preds <- 
+  rf_fit_prec |> 
+  predict(test) |> 
+  bind_cols(rf_fit_prec |> predict(test, type = "prob")) |>
+  rename(.pred_no_spam = `.pred_no spam`) |> 
+  mutate(
+    model = "Random Forest",
+    .pred_class = factor(.pred_class, ordered = TRUE, levels = c("spam", "no spam"))
+  ) |> 
+  bind_cols(test |> select(actual = spam))
+
+test_preds <- bind_rows(nn_preds, rf_preds)
 ```
 
-Neural network (we already collected preds further above after being done with training):
-
-```{r}
-mlp_metrics_test <- 
-  mlp_preds |> 
-  class_metrics(truth = spam, estimate = mlp_pred) |> 
-  select(-.estimator) |> 
-  pivot_wider(names_from = ".metric", values_from = ".estimate") |> 
-  mutate(name = "Neural Network")
-```
-
-Best by accuracy:
+Metrics:
 
 ```{r}
 # Some markdown magic:
@@ -666,23 +664,113 @@ mark_best <- function(x) {
   })
 }
 
-test_eval |> 
-  select(name, best_acc) |> 
-  unnest(best_acc) |> 
-  bind_rows(mlp_metrics_test) |> 
-  mutate(across(-name, mark_best)) |> 
+test_preds |> 
+  group_by(model) |> 
+  nest(-model) |> 
+  mutate(
+    metrics = map(data, \(preds) {
+      preds |> 
+        class_metrics(truth = actual, estimate = .pred_class) |> 
+        select(-.estimator) |> 
+        pivot_wider(names_from = ".metric", values_from = ".estimate")
+    })
+  ) |> 
+  select(model, metrics) |> 
+  unnest(metrics) |> 
+  rename(f1 = f_meas) |> 
+  ungroup() |> 
+  select(model, precision, everything()) |> 
+  mutate(across(-model, mark_best)) |> 
+  rename_with(stringr::str_to_title) |> 
   knitr::kable()
 ```
 
-Best by precision:
+Looking at model confidence. Graphically, we can see that the neural network is more confident in its correct predictions, but also overconfident in its wrong predictions:
 
 ```{r}
-test_eval |> 
-  select(name, best_prec) |> 
-  unnest(best_prec) |> 
-  bind_rows(mlp_metrics_test) |> 
-  select(name, precision) |> 
-  mutate(precision = mark_best(precision)) |> 
-  knitr::kable()
+confidence <- 
+ test_preds |> 
+  mutate(
+    confidence = if_else(.pred_class == "spam", .pred_spam, .pred_no_spam),
+    correct = if_else(actual == .pred_class, "correct", "incorrect")
+  )
+
+confidence |> 
+  ggplot(aes(x = correct, y = confidence, fill = model, color = model)) +
+  geom_hline(yintercept = c(.5, 1), lty = "dotted", color = "grey50") +
+  geom_boxplot(position = position_dodge(width = 0.2), width = .1, outliers = FALSE, alpha = .5) +
+  theme_minimal() +
+  labs(
+    title = "Confidence in predictions",
+    subtitle = "By correct/incorrect classification",
+    x = "",
+    y = "Predicted class probability",
+    fill = "Model",
+    color = "Model"
+  )
 ```
 
+Other way of looking at it (making both & then deciding later for report):
+
+```{r}
+confidence |> 
+  ggplot(aes(x = confidence, color = model, fill = model)) +
+  geom_density(alpha = .34) +
+  facet_wrap(~correct, nrow = 2, scale = "free_y") +
+  theme_minimal()  +
+  labs(
+    title = "Confidence in predictions",
+    subtitle = "By correct/incorrect classification",
+    x = "Predicted class probability",
+    y = "Density",
+    fill = "Model",
+    color = "Model"
+  ) +
+  theme(aspect.ratio = .5)
+```
+
+
+ROC curves:
+
+```{r}
+test_preds |> 
+  group_by(model) |>
+  roc_curve(truth = actual, .pred_spam) |>
+  ungroup() |> 
+  ggplot(aes(x = 1 - specificity, y = sensitivity, color = model)) +
+  geom_line() + 
+  geom_abline(linetype = "dotted", color = "grey50") +
+  theme_minimal() +
+  labs(
+    title = "ROC Curves",
+    subtitle = "Neural Network & Random Forest, Test set",
+    x = "1 - Specificity",
+    y = "Sensitivity",
+    color = "Model"
+  ) +
+  theme(aspect.ratio = 1) # square, easier to tell what's going on
+
+```
+
+RF variable importance:
+
+```{r}
+rf_fit_prec |> 
+  extract_fit_parsnip() |> 
+  vip::vi() |> 
+  slice(1:10) |> 
+  ggplot(aes(x = Importance, y = forcats::fct_reorder(Variable, Importance), color = Variable)) +
+  geom_segment(aes(xend = 0, yend = Variable), size = 2, alpha = 0.5) +
+  geom_point(size = 4) +
+  theme_minimal() +
+  labs(
+    title = "Variable Importance",
+    subtitle = "Random Forest",
+    x = "Importance (Impurity)",
+    y = "Feature"
+  ) +
+  theme(
+    legend.position = "none",
+    axis.text.y = element_text(size = 12)
+  )
+```
