@@ -774,3 +774,107 @@ rf_fit_prec |>
     axis.text.y = element_text(size = 12)
   )
 ```
+
+# Bootstrapped confidence intervals
+
+Given we cannot use `tune::int_pctl()` with the neural network, I am just doing both manually.
+
+```{r}
+keras3::set_random_seed(42)
+
+test_boot <- 
+  bootstraps(test, times = 500, strata = "spam") |> 
+  # no splits, we only want to make predictions:
+  mutate(data = map(splits, analysis)) |> 
+  select(id, data)
+
+nn_boot <- 
+  test_boot |> 
+  mutate(
+    metrics_dnn = map(data, function(sample) {
+      # The model is standalone, not a "workflow",
+      # so we need to send the data through the prep pipeline
+      # manually & then convert to matrix format
+      X <- 
+        spam_rec |> 
+        prep() |> 
+        bake(new_data = sample) |> 
+        select(-spam) |> 
+        as.matrix() |> 
+        unname()
+      
+      mlp$predict(X, verbose = 0) |> 
+        as.vector() |> 
+        round() |> 
+        tibble(mlp_pred = _) |> 
+        bind_cols(sample) |> 
+        mutate(
+          mlp_pred = factor(
+            if_else(mlp_pred == 1, "spam", "no spam"), levels = c("spam", "no spam")
+          )
+        ) |> 
+        class_metrics(truth = spam, estimate = mlp_pred) |> 
+        select(-.estimator) |> 
+        pivot_wider(names_from = ".metric", values_from = ".estimate") |> 
+        mutate(name = "Neural Network")
+    })
+  ) |> 
+  unnest(metrics_dnn)
+
+rf_boot <- 
+  test_boot |> 
+  mutate(
+    metrics_rf = map(data, function(sample) {
+      # This is a workflow object containing the preprocessing pipeline
+      # and model that can just take any data directly:
+      rf_fit_prec |> 
+        augment(new_data = sample) |> 
+        class_metrics(truth = spam, estimate = .pred_class) |> 
+        select(-.estimator) |> 
+        pivot_wider(names_from = ".metric", values_from = ".estimate") |> 
+        mutate(name = "Random Forest")
+    })
+  ) |> 
+  unnest(metrics_rf)
+```
+
+Evaluating:
+
+```{r}
+fns <- list(
+  mean = mean,
+  # 95% confidence intervals:
+  lower = \(x) mean(x) - 1.96 * (sd(x) / sqrt(500)), # 500 = n
+  upper = \(x) mean(x) + 1.96 * (sd(x) / sqrt(500))
+)
+
+boot_res <- 
+  nn_boot |> 
+  select(-c(id, data)) |> 
+  bind_rows(rf_boot |> select(-c(id, data))) |> 
+  pivot_longer(-name, names_to = "metric", values_to = "estimate") |> 
+  group_by(name, metric) |> 
+  summarise(across(estimate, fns, .names = "{fn}")) |> 
+  ungroup()
+
+boot_res
+```
+
+Inspecting graphically:
+
+```{r}
+boot_res |> 
+  mutate(metric = if_else(metric == "f_meas", "F1", metric) |> stringr::str_to_title()) |> 
+  ggplot(aes(x = metric, y = mean, color = name)) +
+  geom_point(position = position_dodge(0.1)) +
+  geom_errorbar(aes(ymin = lower, ymax = upper), position = position_dodge(0.1), width = .05) +
+  theme_minimal() +
+  labs(
+    title = "Performance on test set",
+    subtitle = "Bootstrapped 95% confidence intervals",
+    x = "Metric",
+    y = "Estimate",
+    color = ""
+  )
+```
+
