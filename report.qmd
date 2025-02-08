@@ -4,39 +4,36 @@ author: "Lennart Kasserra"
 format: pdf
 ---
 
+\begin{center}
+  \href{https://github.com/kssrr/sl-spam-classification}{\textbf{\textcolor{blue}{Link to Repository}}}
+\end{center}
+
 # Introduction
 
-*An introduction should introduce the problem and data you're working on, give some background and relevant detail for the reader, and explain why it is important.*
+Spam emails are a very common and well-known nuisance: they often contain phishing attempts, malware, and scams that can compromise personal data and financial security. While traditional rule-based filters have long struggled to adapt to evolving spam tactis, machine learning models can dynamically learn patterns from data and are thus more robust. The goal of this project was to build a model that could reliably classify emails as either "spam" or "no spam" ("binary classification task"), and to evaluate whether a deep learning approach was preferrable to using "traditional" models. The data was provided via the UC Irvine machine learning repository.
+
+Overall, my findings indicate that a deep learning approach is not neccessary: a properly tuned random forest classifier outperformed a deep neural network on all evaluated metrics.
 
 # Analysis 
 
-*Any exploratory analysis of your data, and general summary of the data (e.g. summary statistics, correlation heatmaps, graphs, information about the data...). Tell the reader about the types of variables you have and some general information about them, Plots and/or Tables are always great. This should also include any cleaning and joining you did.*
+The data contained 57 features, and one column denoting the class label (either spam or no spam). Most features were related to the presence and frequency of certain words or special characters, or excessive capitalization. I suspected (1) class imbalance, and (2) high feature correlations, which is what I decided to investigate. I also ran a principal component analysis (PCA) to see if we could find some patterns in a transformed representation of the data. 
+
+::: {#fig-eda layout-ncol=3}
+
+![](figures/class_distribution.png)
+
+![](figures/feature_correlations.png)
+
+![](figures/pca.png)
+
+Exploratory data analysis: investigating class labels, feature correlations & a principal component analysis (training set only; training-validation-testing split was stratified on class label).
+:::
+
+After investigation, I decided on my preprocessing steps: despite class imbalance not being too bad, I decided to use synthetic minority class oversampling (SMOTE) to generate synthetic examples of spam emails and equalize the number of training examples per class. I further log-transformed and normalized all features, dropped highly correlated features ($r > 0.9$ or $r < -0.9$) and features with near-zero variance.
 
 # Methods
 
-The main model is a deep neural network with four hidden layers. Below is a brief technical overview of the model's architecture and its parameters, as well as the hyperparameters I used.
-
-::: {#fig-nndetails}
-
-| Layer type | Shape (units) | Activation |
-|------------|--------------|------------|
-| Input layer | n Input features | *None* |
-| Dense (hidden) | 128 | ReLU |
-| *Dropout* | *128* | *None* |
-| Dense (hidden) | 64 | ReLU |
-| *Dropout* | *64* | *None* |
-| Dense (hidden) | 32 | ReLU |
-| *Dropout* | *32* | *None* |
-| Dense (hidden) | 16 | ReLU |
-| *Dropout* | *16* | *None* |
-| Output layer | 1 | Sigmoid |
-
-\begin{centering}
-Total parameters: 43,397
-\end{centering}
-
-Architecture
-::: 
+The main model is a deep neural network with four hidden layers. The hidden layers had 128, 64, 32 & 16 neurons respectively, all using the Rectified Linear Unit (ReLU) activation function and with dropout applied after every layer. The output layer was a one-neuron layer with sigmoid activation function, appropriate for this sort of binary classification task. Hyperparameters are shown in the table below.
 
 ::: {#fig-hyperparams}
 
@@ -65,22 +62,26 @@ Learning rate scheduling was set up to reduce the learning rate by a factor of 0
 Training process of the deep neural network.
 :::
 
-To select a proper competitor to compare the deep neural network against, I evaluated three "traditional" models: a penalized logistic regression model, a gaussian naive bayes classifier, and a random forest. For all models, I tuned their hyperparameters using regular grid search with ten-fold cross validation [^naive_bayes], and then compared their performance on the training set to that of the neural network. Results can be found in FIGURE X.
+To select a proper competitor to compare the deep neural network against, I evaluated three "traditional" models: a penalized logistic regression model, a gaussian naive bayes classifier, and a random forest. For all models, I tuned their hyperparameters using regular grid search with ten-fold cross validation [^naive_bayes], and then compared their performance on the training set to that of the neural network. Results can be found in figure 4.
 
-![Potential competitors versus the deep neural network, evaluated on the training set. The 95% confidence intervals were calculated across the ten folds used for tuning.](figures/uncertainty_precision.png)
+I decided that for the given application - detecting spam - false positives (i.e. falsely labeling genuine emails as spam, and thus potentially removing them from the inbox) were more costly or undesirable than the annoyance of having an occasional spam email slip through, and thus decided that precision ("what proportion of emails classified as spam were actually spam") was the most crucial metric.
+
+![Potential competitors versus the deep neural network, evaluated on the training set. The 95% confidence intervals were calculated across the ten folds used for tuning.](figures/uncertainty_precision.png){width="80%"}
 
 [^naive_bayes]: Except for the gaussian naive bayes, where I did not tune the smoothing parameter & just used raw probabilities instead (the smoothing should not have any effect in this setting).
 
 # Results
 
-The deep neural network was outperformed by a tuned Random Forest model on all metrics when evaluated on the test set. Crucially, it delivered lower precision than the Random Forest, but also fell behind on accuracy and f1-score. While the performance differences are at best marginal, when combined with the explainability that Random Forest offers over a deep neural network this is a solid case for using a "traditional" over a deep learning approach. Below are the metrics computed on the test set.
+The deep neural network was outperformed by a tuned Random Forest model on all metrics when evaluated on the test set. Crucially, it delivered lower precision than the Random Forest, but also fell behind on accuracy and f1-score. While the performance differences are at best marginal, when combined with the explainability that Random Forest offers over a deep neural network this is a solid case for using a "traditional" over a deep learning approach. Below are the metrics computed on the test set, both as point estimates and with bootstrapped 95% confidence intervals.
 
 | Model | Precision | Accuracy | F1 |
 |-------|-----------|----------|----|
 | Neural Network | 0.932 | 0.939 | 0.922 |
 | Random Forest | **0.935** | **0.942** | **0.926** |
 
-Additionally, I examined the models' "confidence" in their classifications by comparing their outputted class probabilities when being correct versus when being wrong. On average, the neural network is also more confident in misclassifications, which might hint at a deeper structural problem. However, examining the ROC curves shows just how close together the two models are in terms of performance.
+![Test metrics with bootstrapped 95% confidence intervals, computed across 500 resamples.](figures/test_boostrapped_ci.png){width="80%"}
+
+Additionally, I examined the models' "confidence" in their classifications by comparing their outputted class probabilities when being correct versus when being wrong. On average, the neural network is also overconfident in misclassifications, which might hint at a deeper structural problem. However, examining the ROC curves shows just how close together the two models are in terms of performance.
 
 ::: {#fig-testing layout-ncol=2}
 
@@ -97,7 +98,7 @@ Over all, a deep learning approach is not neccessary for this use case, and give
 
 Given we decided on the Random Forest model, we can try to generate some explicit knowledge about our data. We can do this by examining variable importance, which I kept track of when building the model.
 
-![](figures/variable_importance.png)
+![](figures/variable_importance.png){width="80%"}
 
 It seems that the number of exclamation marks and dollar signs, as well as promising free stuff are a giveaway about the true label of an observation. This is perhaps not a groundbreaking insight, but nevertheless illustrates once more the value of "traditional" models vis-a-vis deep learning approaches, where generating explicit knowledge about the data and classes is much less straight-forward, if at all possible. 
 
