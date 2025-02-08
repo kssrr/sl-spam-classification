@@ -8,7 +8,9 @@ Building a neural network to classify emails as spam, as well as "traditional" c
 
 Sequential model (multilayer perceptron) built with keras/tensorflow. Key facts: Adam optimizer, weight decay (L2-regularization), learning rate scheduling, early stopping. This is the architecture:
 
-![](figures/neural_network.png)
+<p align="center">
+    <img src="figures/neural_network.png" alt="Description" width="300">
+</p>
 
 ![](figures/training_curves.png)
 
