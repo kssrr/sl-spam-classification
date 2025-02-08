@@ -27,7 +27,7 @@ Sequential model (multilayer perceptron) built with keras/tensorflow. Key facts:
 | Neural Network | 0.932 | 0.939 | 0.922 |
 | Random Forest | **0.935** | **0.942** | **0.926** |
 
-![](figures/test_bootstrapped_ci.png)
+![](figures/test_boostrapped_ci.png)
 
 ![](figures/confidence.png)
 
