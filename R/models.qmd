@@ -32,6 +32,8 @@ library(tidymodels)
 
 # Data
 
+General prep
+
 ```{r}
 set.seed(42)
 
@@ -40,6 +42,7 @@ spam <- readr::read_csv(here::here("data/spam.csv"))
 spam <- 
   spam |> 
   mutate(
+    # outcome has to be ordered factor for tidymodels:
     spam = factor(
       if_else(spam == 0, "no spam", "spam"),
       ordered = TRUE,
@@ -47,6 +50,7 @@ spam <-
     )
   )
 
+# Data split:
 spam_split <- initial_validation_split(spam, prop = c(0.6, 0.2), strata = "spam")
 
 train <- training(spam_split)
@@ -88,6 +92,8 @@ train |>
   ggplot(aes(x = spam, y = n, color = spam, fill = spam)) +
   geom_col(alpha = 0.7) +
   theme_minimal() +
+  scale_color_brewer(palette = "Dark2", direction = -1) + 
+  scale_fill_brewer(palette = "Dark2", direction = -1) +
   labs(
     title = "Class Distribution",
     x = "", 
