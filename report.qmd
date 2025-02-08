@@ -66,7 +66,16 @@ To select a proper competitor to compare the deep neural network against, I eval
 
 I decided that for the given application - detecting spam - false positives (i.e. falsely labeling genuine emails as spam, and thus potentially removing them from the inbox) were more costly or undesirable than the annoyance of having an occasional spam email slip through, and thus decided that precision ("what proportion of emails classified as spam were actually spam") was the most crucial metric.
 
-![Potential competitors versus the deep neural network, evaluated on the training set. The 95% confidence intervals were calculated across the ten folds used for tuning.](figures/uncertainty_precision.png){width="80%"}
+The random forest classifier performed roughly on par with the deep neural network on the training set when considering both precision but also accuracy, so I decided to use this model as competitor to the neural network.
+
+::: {#fig-train-metrics layout-ncol=2}
+
+![](figures/uncertainty_precision.png)
+
+![](figures/uncertainty_accuracy.png)
+
+Potential competitors versus the deep neural network, evaluated on the training set. Confidence intervals were calculated across the ten folds used for tuning.
+:::
 
 [^naive_bayes]: Except for the gaussian naive bayes, where I did not tune the smoothing parameter & just used raw probabilities instead (the smoothing should not have any effect in this setting).
 
