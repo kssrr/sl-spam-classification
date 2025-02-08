@@ -83,10 +83,15 @@ Potential competitors versus the deep neural network, evaluated on the training 
 
 The deep neural network was outperformed by a tuned Random Forest model on all metrics when evaluated on the test set. Crucially, it delivered lower precision than the Random Forest, but also fell behind on accuracy and f1-score. While the performance differences are at best marginal, when combined with the explainability that Random Forest offers over a deep neural network this is a solid case for using a "traditional" over a deep learning approach. Below are the metrics computed on the test set, both as point estimates and with bootstrapped 95% confidence intervals.
 
+::: {#fig-test-table}
+
 | Model | Precision | Accuracy | F1 |
 |-------|-----------|----------|----|
 | Neural Network | 0.932 | 0.939 | 0.922 |
 | Random Forest | **0.935** | **0.942** | **0.926** |
+
+Test metrics for the Neural Network and the Random Forest.
+:::
 
 ![Test metrics with bootstrapped 95% confidence intervals, computed across 500 resamples.](figures/test_boostrapped_ci.png){width="80%"}
 
