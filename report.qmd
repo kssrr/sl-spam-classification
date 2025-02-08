@@ -10,7 +10,7 @@ format: pdf
 
 # Introduction
 
-Spam emails are a very common and well-known nuisance: they often contain phishing attempts, malware, and scams that can compromise personal data and financial security. While traditional rule-based filters have long struggled to adapt to evolving spam tactis, machine learning models can dynamically learn patterns from data and are thus more robust. The goal of this project was to build a model that could reliably classify emails as either "spam" or "no spam" ("binary classification task"), and to evaluate whether a deep learning approach was preferrable to using "traditional" models. The data was provided via the UC Irvine machine learning repository.
+Spam emails are a very common and well-known nuisance: they often contain phishing attempts, malware, and scams that can compromise personal data and financial security. While traditional rule-based filters have long struggled to adapt to evolving spam tactics, machine learning models can dynamically learn patterns from data and are thus more robust. The goal of this project was to build a model that could reliably classify emails as either "spam" or "no spam" ("binary classification task"), and to evaluate whether a deep learning approach was preferrable to using "traditional" models. The data was provided via the UC Irvine machine learning repository.
 
 Overall, my findings indicate that a deep learning approach is not neccessary: a properly tuned random forest classifier outperformed a deep neural network on all evaluated metrics.
 
