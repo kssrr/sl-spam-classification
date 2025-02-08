@@ -12,9 +12,9 @@ Sequential model (multilayer perceptron) built with keras/tensorflow. Key facts:
     <img src="figures/neural_network.png" alt="Description" width="300">
 </p>
 
-![](figures/training_curves.png)
+![](figures/loss_curves.png)
 
-![](figures/training_curves_metrics.png)
+![](figures/training_curves.png)
 
 ## Benchmark against traditional models
 
