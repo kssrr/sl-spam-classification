@@ -50,7 +50,7 @@ spam <-
     )
   )
 
-# Data split:
+# Data split (60/20/20):
 spam_split <- initial_validation_split(spam, prop = c(0.6, 0.2), strata = "spam")
 
 train <- training(spam_split)
@@ -64,13 +64,23 @@ Getting an overview:
 glimpse(train)
 ```
 
-A lot of these seem to be word or character frequencies, so they will likely have very skewed distributions.
+A lot of these seem to be word or character frequencies, so I suspect that they might be sparse (a lot of zero values) and have skewed distributions. Investigating:
+
+```{r}
+#| fig-width: 12
+#| fig-height: 12
+train |> 
+  select(-spam) |> 
+  pivot_longer(cols = everything(), names_to = "Feature", values_to = "Value") |> 
+  ggplot(aes(x = Value)) +
+  geom_histogram(bins = 20, fill = "steelblue", color = "white") +
+  facet_wrap(~ Feature, scales = "free") + 
+  theme_minimal()
+```
 
 # Preprocessing
 
-Fitting the recipe to the training data (to avoid leakage). Synthetic minority class oversampling, to get the same amount of examples for both classes, log-transforming[^log] Z-standardizing, dropping highly correlated features & those with near-zero variance:
-
-[^log]: Most of these features are word counts of some sort, likely with very skewed distributions.
+Fitting the recipe to the training data (to avoid leakage). Synthetic minority class oversampling, to get the same amount of examples for both classes, log-transforming, normalizing, dropping highly correlated features & those with near-zero variance:
 
 ```{r}
 spam_rec <- 
@@ -102,7 +112,7 @@ train |>
   theme(legend.position = "none")
 ```
 
-Feature correlations:
+Feature correlations (unlabelled, hard to see with this many features anyways, just to check *whether* highly correlated features exist):
 
 ```{r}
 corrs <- 
@@ -128,7 +138,7 @@ corrs |>
   )
 ```
 
-PCA: checking if we can find some patterns in a transformed representation (also seeing if PCA as part of the preprocessing pipeline might make sense)
+PCA: checking if we can find some patterns in a transformed representation (also seeing if PCA as part of the preprocessing pipeline might make sense)[^pca]:
 
 ```{r}
 spam_rec |> 
@@ -144,6 +154,8 @@ spam_rec |>
   theme_minimal() +
   labs(title = "Principal Component Analysis", fill = "", color = "")
 ```
+
+[^pca] I tried this (it was tempting to just magically generate richt & uncorrelated features instead of dealing with the existing ones, but that would make the neural network more unstable)
 
 # Neural Network Classifier
 
