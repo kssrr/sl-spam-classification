@@ -21,6 +21,10 @@ pre, code {
 }
 </style>
 
+Training a deep neural network and a "traditional" competitor model to detect spam emails. The competitor model ended up being a tuned Random Forest, which showed more promising results across 10 folds than other models I had evaluated as potential competitors (Penalized Logistic Regression & Naive Bayes).
+
+The Random Forest showed slightly better results on the test set than the deep neural network.
+
 # Packages
 
 ```{r}
@@ -335,32 +339,7 @@ mlp_metrics_train <-
   mutate(name = "Neural Network")
 ```
 
-Evaluating the model on the test set:
-
-```{r}
-mlp_preds <- 
-  mlp$predict(X_test) |> 
-  round() |> 
-  as.vector() |> 
-  tibble(mlp_pred = _) |> 
-  bind_cols(test) |> 
-  mutate(mlp_pred = factor(if_else(mlp_pred == 1, "spam", "no spam"), levels = c("spam", "no spam")))
-```
-
-Metrics:
-
-```{r}
-mlp_preds |> 
-  class_metrics(truth = spam, estimate = mlp_pred)
-```
-
-Confusion matrix:
-
-```{r}
-mlp_preds |> 
-  conf_mat(truth = spam, estimate = mlp_pred) |> 
-  autoplot(type = "heatmap")
-```
+Will evaluate it on the test set later along with the competitor, for now I only need the train metrics.
 
 # Competitors
 
@@ -675,7 +654,6 @@ test_preds |>
     color = "Model"
   ) +
   theme(aspect.ratio = 1) # square, easier to tell what's going on
-
 ```
 
 Confusion matrices:
@@ -690,7 +668,8 @@ test_preds |>
       labs(title = n)
   })) |> 
   pull(plot) |> 
-  patchwork::wrap_plots(ncol = 2)
+  patchwork::wrap_plots(ncol = 2) +
+  theme(aspect.ratio = 1) # make sure they remain squares
 ```
 
 RF variable importance:

@@ -18,7 +18,7 @@ Sequential model (multilayer perceptron) built with keras/tensorflow. Key facts:
 
 ## Benchmark against traditional models
 
-![](figures/uncertainty_precision.png)
+![](figures/competitors_tune_res.png)
 
 ### Test metrics & performance
 
