@@ -16,7 +16,7 @@ Overall, my findings indicate that a deep learning approach is not neccessary: a
 
 # Analysis 
 
-The data contained 57 features, and one column denoting the class label (either spam or no spam). Most features were related to the presence and frequency of certain words or special characters, or excessive capitalization. I suspected (1) class imbalance, and (2) high feature correlations, which is what I decided to investigate. I also ran a principal component analysis (PCA) to see if we could find some patterns in a transformed representation of the data. 
+The data contained 57 features, and one column denoting the class label (either spam or no spam). Most features were related to the presence and frequency of certain words or special characters, or excessive capitalization. Many of the features were very sparse and had heavily right-skewed distributions (more on this in the code). The classes were slightly imbalanced, with fewer spam than non-spam emails. I further ran a principal component analysis (PCA) to see if we could find some patterns in a transformed representation of the data. 
 
 ::: {#fig-eda layout-ncol=3}
 
@@ -68,14 +68,7 @@ I decided that for the given application - detecting spam - false positives (i.e
 
 The random forest classifier performed roughly on par with the deep neural network on the training set when considering both precision but also accuracy, so I decided to use this model as competitor to the neural network.
 
-::: {#fig-train-metrics layout-ncol=2}
-
-![](figures/uncertainty_precision.png)
-
-![](figures/uncertainty_accuracy.png)
-
-Potential competitors versus the deep neural network, evaluated on the training set. Confidence intervals were calculated across the ten folds used for tuning.
-:::
+![Ranking tuned potential competitors by precision achieved across ten folds.](figures/competitors_tune_res.png){width="80%"}
 
 [^naive_bayes]: Except for the gaussian naive bayes, where I did not tune the smoothing parameter & just used raw probabilities instead (the smoothing should not have any effect in this setting).
 
@@ -85,10 +78,10 @@ The deep neural network was outperformed by a tuned Random Forest model on all m
 
 ::: {#fig-test-table}
 
-| Model | Precision | Accuracy | F1 |
-|-------|-----------|----------|----|
-| Neural Network | 0.932 | 0.939 | 0.922 |
-| Random Forest | **0.935** | **0.942** | **0.926** |
+| Model | Precision | Recall | F1 | Accuracy |
+|:------|:----------|:-------|:---|:---------|
+| Neural Network | 0.932 | 0.912| 0.922 | 0.939 |
+| Random Forest | **0.935** | **0.917** | **0.926** | **0.942** |
 
 Test metrics for the Neural Network and the Random Forest.
 :::
@@ -110,11 +103,7 @@ Over all, a deep learning approach is not neccessary for this use case, and give
 
 # Reflection
 
-Given we decided on the Random Forest model, we can try to generate some explicit knowledge about our data. We can do this by examining variable importance, which I kept track of when building the model.
-
-![](figures/variable_importance.png){width="80%"}
-
-It seems that the number of exclamation marks and dollar signs, as well as promising free stuff are a giveaway about the true label of an observation. This is perhaps not a groundbreaking insight, but nevertheless illustrates once more the value of "traditional" models vis-a-vis deep learning approaches, where generating explicit knowledge about the data and classes is much less straight-forward, if at all possible. 
+[Notes on Interpretability here]
 
 Regarding possible improvements, it would have been tempting to try out more "traditional" models, and to explore a larger search space when tuning them, as it seems that when properly tuned they may outperform deep learning models on this task.
 

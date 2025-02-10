@@ -678,6 +678,21 @@ test_preds |>
 
 ```
 
+Confusion matrices:
+
+```{r}
+test_preds |> 
+  group_by(model) |> 
+  conf_mat(truth = actual, estimate = .pred_class) |> 
+  mutate(plot = map2(model, conf_mat, function(n, c) {
+    c |> 
+      autoplot(type = "heatmap") + 
+      labs(title = n)
+  })) |> 
+  pull(plot) |> 
+  patchwork::wrap_plots(ncol = 2)
+```
+
 RF variable importance:
 
 ```{r}
