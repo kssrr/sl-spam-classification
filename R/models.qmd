@@ -80,7 +80,7 @@ train |>
 
 # Preprocessing
 
-Fitting the recipe to the training data (to avoid leakage). Synthetic minority class oversampling, to get the same amount of examples for both classes, log-transforming, normalizing, dropping highly correlated features & those with near-zero variance:
+Below is the preprocessing [recipe](https://recipes.tidymodels.org/) I used. Synthetic minority class oversampling, to get the same amount of examples for both classes (although class imbalance is not too terrible in this case), log-transforming (mitigate some of the right skew), normalizing, dropping highly correlated features & those with near-zero variance:
 
 ```{r}
 spam_rec <- 
@@ -91,6 +91,8 @@ spam_rec <-
   step_corr(all_numeric_predictors(), threshold = 0.9) |> 
   step_nzv(all_numeric_predictors())
 ```
+
+The recipe is specified to be fitted ("prepped") on the training data to avoid leakage.
 
 # EDA
 
@@ -318,7 +320,7 @@ training_prog |>
 Collecting final metrics for training set:
 
 ```{r}
-class_metrics <- metric_set(accuracy, precision, f_meas)
+class_metrics <- metric_set(accuracy, precision, recall, f_meas)
 
 mlp_metrics_train <- 
   mlp$predict(X_train) |> 
@@ -377,6 +379,8 @@ To select a proper competitor, I tune three "traditional" models:
 * Random Forest
 * Naive Bayes
 
+Below are the model specifications and tuning grids I use (regular grids):
+
 ```{r}
 set.seed(42)
 
@@ -414,7 +418,7 @@ nb_spec <- naive_Bayes(
 nb_grid <- tibble(smoothness = 0)
 ```
 
-Glueing together & tuning:
+Glueing together & tuning. I bundle the preprocessing recipe into [workflows](https://workflows.tidymodels.org/) together with the models & then tune them using regular grid search:
 
 ```{r}
 set.seed(42)
@@ -429,7 +433,9 @@ models <- tribble(
 models <- 
   models |> 
   mutate(
+    # bundle recipe & models into workflows:
     workflow = map(spec, \(m) workflow() |> add_recipe(spam_rec) |> add_model(m)),
+    # running grid search for all models:
     tuning_res = map2(workflow, grid, function(wf, g) {
       tune_grid(
         wf, 
@@ -619,6 +625,48 @@ best_train |>
   )
 ```
 
+## Final Random forest vs. NN on the train set
+
+Selecting the best competitor models by precision, fitting to train & collecting their metrics on the training set:
+
+```{r}
+train_fits <- 
+  models |> 
+  mutate(
+    last_fit = map2(workflow, tuning_res, function(wf, tune) {
+      wf |> 
+        finalize_workflow(select_best(tune, metric = "precision")) |> 
+        fit(train)
+    }),
+    metrics_train = map(last_fit, function(mod) {
+      mod |> augment(new_data = train) |> class_metrics(truth = spam, estimate = .pred_class)
+    })
+  )
+```
+
+Comparing their performance to that of the neural network:
+
+```{r}
+# Some markdown magic:
+mark_best <- function(x) {
+  map_chr(x, function(val) {
+    if (val == max(x))
+      return(paste0("**", as.character(round(val, 3)), "**"))
+    as.character(round(val, 3))
+  })
+}
+
+train_fits |> 
+  select(name, metrics_train) |> 
+  unnest(metrics_train) |> 
+  pivot_wider(names_from = ".metric", values_from = ".estimate") |> 
+  select(name, precision, accuracy, f_meas) |> 
+  bind_rows(mlp_metrics_train) |> 
+  mutate(across(-name, mark_best)) |> 
+  knitr::kable()
+```
+
+
 # Random Forest vs. Neural Network on test set
 
 ```{r}
@@ -673,15 +721,6 @@ test_preds <- bind_rows(nn_preds, rf_preds)
 Metrics:
 
 ```{r}
-# Some markdown magic:
-mark_best <- function(x) {
-  map_chr(x, function(val) {
-    if (val == max(x))
-      return(paste0("**", as.character(round(val, 3)), "**"))
-    as.character(round(val, 3))
-  })
-}
-
 test_preds |> 
   group_by(model) |> 
   nest(-model) |> 
