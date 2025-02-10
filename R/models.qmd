@@ -148,7 +148,7 @@ spam_rec |>
   prep() |> 
   bake(new_data = train) |> 
   ggplot(aes(x = .panel_x, y = .panel_y, color = spam, fill = spam)) +
-  geom_point(alpha = 0.4, size = 0.5) +
+  geom_point(alpha = 0.25, size = 0.5) +
   ggforce::geom_autodensity(alpha = .3) +
   ggforce::facet_matrix(vars(-spam), layer.diag = 2) + 
   scale_color_brewer(palette = "Dark2", direction = -1) + 
@@ -157,7 +157,7 @@ spam_rec |>
   labs(title = "Principal Component Analysis", fill = "", color = "")
 ```
 
-[^pca] I tried this (it was tempting to just magically generate richt & uncorrelated features instead of dealing with the existing ones, but that would make the neural network more unstable)
+[^pca]: I tried this (it was tempting to just magically generate richt & uncorrelated features instead of dealing with the existing ones, but that would make the neural network more unstable)
 
 # Neural Network Classifier
 
@@ -219,10 +219,10 @@ mlp |>
     optimizer = optimizer_adam(learning_rate = 0.001),
     loss = "binary_crossentropy",
     metrics = list(
-      metric_binary_accuracy(),
-      metric_precision(),
-      metric_recall(),
-      metric_auc()
+      metric_binary_accuracy(name = "Accuracy"),
+      metric_precision(name = "Precision"),
+      metric_recall(name = "Recall"),
+      metric_f1_score(average = "micro", threshold = .5, name = "F1")
     )
   )
 ```
@@ -335,7 +335,6 @@ mlp_metrics_train <-
   mutate(name = "Neural Network")
 ```
 
-
 Evaluating the model on the test set:
 
 ```{r}
@@ -379,7 +378,7 @@ To select a proper competitor, I tune three "traditional" models:
 * Random Forest
 * Naive Bayes
 
-Below are the model specifications and tuning grids I use (regular grids):
+Model specifications:
 
 ```{r}
 set.seed(42)
@@ -391,8 +390,6 @@ log_spec <- logistic_reg(
   mixture = 1 # pure L1 regularization
 )
 
-log_grid <- tibble(penalty = 10^seq(-5, -1, length.out = 50))
-
 rf_spec <- rand_forest(
   mode = "classification",
   mtry = tune(),
@@ -400,38 +397,44 @@ rf_spec <- rand_forest(
   min_n = tune()
 ) |> set_engine("ranger", importance = "impurity") # variable importance
 
-rf_grid <- expand_grid(
-  mtry = c(4, 8, 12),
-  trees = c(100, 500, 1000),
-  min_n = c(5, 10, 20)
-)
-
 # For naive bayes, we disable kernel density estimation. This yields
 # Gaussian naive bayes, so we assume normally distributed features
 nb_spec <- naive_Bayes(
   mode = "classification",
   smoothness = tune()
 ) |> set_engine("naivebayes", usekernel = FALSE)
+```
+
+Hyperparameter grids (I do regular grid search, given the number of hyperparameters to tune is fairly small; the maximum is three for the random forest, so imo strategies like bayesian tuning don't really pay off):
+
+```{r}
+log_grid <- tibble(penalty = 10^seq(-5, -1, length.out = 50))
+
+rf_grid <- expand_grid(
+  mtry = c(4, 8, 12),
+  trees = c(250, 500, 1000),
+  min_n = c(5, 10, 20)
+)
 
 # just using raw probabilities (smoothing has no effect for Gaussian bayes
 # with only numerical features I believe), but also cross-validating
 nb_grid <- tibble(smoothness = 0)
 ```
 
-Glueing together & tuning. I bundle the preprocessing recipe into [workflows](https://workflows.tidymodels.org/) together with the models & then tune them using regular grid search:
+Tidymodels does have `workflow_set` and `workflow_map` for multiple models, but I found them awkward to work with, so just glueing this together myself:
 
 ```{r}
 set.seed(42)
 
-models <- tribble(
+competitors <- tribble(
   ~name,                 ~spec,    ~grid,
   "Logistic Regression", log_spec, log_grid,
   "Random Forest",       rf_spec,  rf_grid,
   "Naive Bayes",         nb_spec,  nb_grid
 )
 
-models <- 
-  models |> 
+competitors <- 
+  competitors |> 
   mutate(
     # bundle recipe & models into workflows:
     workflow = map(spec, \(m) workflow() |> add_recipe(spam_rec) |> add_model(m)),
@@ -441,7 +444,7 @@ models <-
         wf, 
         resamples = folds,
         grid = g,
-        metrics = metric_set(accuracy, precision, f_meas),
+        metrics = class_metrics,
         control = control_grid(verbose = TRUE, save_pred = TRUE)
       )
     }),
@@ -449,202 +452,74 @@ models <-
   )
 ```
 
-## Tuning results
+The `workflow`-objects are now like a "pipeline" consisting of the preprocessing recipe and then the model (see [here](https://workflows.tidymodels.org/)).
 
-First, adding 95% confidence intervals to metric estimates (estimated using the results collected across folds):
-
-```{r}
-models <- 
-  models |> 
-  mutate(
-    metrics = map(metrics, function(m) { 
-      m |> mutate(lower = mean - 1.96 * std_err, upper = mean + 1.96 * std_err)
-    })
-  )
-```
-
-### Logistic Regression
-
-Here, we tuned the `penalty` parameter:
+Looking at the tuning results for the competitor models. I consider precision as the most important metric - false positives (i.e. falsely labeling "ham" emails as spam) are more costly:
 
 ```{r}
-models |> 
-  filter(name == "Logistic Regression") |> 
+competitors |> 
   select(name, metrics) |> 
   unnest(metrics) |> 
-  ggplot(aes(x = penalty, y = mean, fill = .metric)) +
-  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2) +
-  geom_point(aes(color = .metric)) +
-  geom_line(aes(color = .metric)) +
-  facet_wrap(~.metric, scales = "free_y") +
-  scale_x_log10() +
-  theme_minimal() +
-  theme(legend.position = "none") +
-  labs(
-    title = "Logistic Regression", 
-    subtitle = "Tuning Results", 
-    x = expression(lambda),
-    y = "",
-    caption = "Shaded area indicates 95% confidence interval.\nLogarithmic X-axis."
-  )
-```
-
-### Random Forest
-
-```{r}
-models |> 
-  filter(name == "Random Forest") |> 
-  select(name, metrics) |> 
-  unnest(metrics) |> 
-  mutate(min_n = factor(min_n, ordered = TRUE)) |> 
-  ggplot(aes(x = mtry, y = mean, group = min_n)) +
-  geom_ribbon(aes(ymin = lower, ymax = upper, fill = min_n), alpha = .1) +
-  geom_point(aes(color = min_n, )) +
-  geom_line(aes(color = min_n, )) +
-  facet_grid(vars(.metric), vars(trees), scale = "free_y") +
-  theme_minimal() +
-  labs(
-    title = "Random Forest",
-    subtitle = "Tuning Results, by number of trees",
-    x = "Number of randomly sampled features",
-    y = "",
-    fill = "Min. N in \nnode for split",
-    color = "Min. N in \nnode for split",
-    caption = "Shaded area indicates 95% confidence interval."
-  )
-```
-
-### Naive Bayes
-
-```{r}
-models |> 
-  filter(name == "Naive Bayes") |> 
-  select(name, metrics) |> 
-  unnest(metrics) |> 
-  ggplot(aes(x = smoothness, y = mean, color = .metric)) +
-  geom_point() +
-  geom_linerange(aes(ymin = lower, ymax = upper)) +
-  facet_wrap(~.metric, nrow = 1) +
-  theme_minimal() +
-  theme(legend.position = "none", axis.text.x = element_blank()) +
-  labs(
-    title = "Naive Bayes",
-    subtitle = "Metric estimates across 10 folds, with 95% confidence interval",
-    x = "",
-    y = ""
-  )
-```
-
-## Uncertainty estimation for best competitors
-
-After tuning, selecting the best models by (1) accuracy, and (2) precision, and showing their uncertainty across folds:
-
-```{r}
-best_train <- 
-  models |> 
-  mutate(
-    # best models by accuracy & precision:
-    best_acc = map(tuning_res, \(res) select_best(res, metric = "accuracy")),
-    best_prec = map(tuning_res, \(res) select_best(res, metric = "precision")),
-    # metrics only for best models:
-    across(c(best_acc, best_prec), function(params) {
-      map2(tuning_res, params, function(res, p) {
-        res |> 
-          collect_metrics() |> 
-          filter(.config == p$.config)
-      })
-    }, .names = "{col}_train"),
-    # add 95% confidence interval:
-    across(ends_with("_train"), function(metrics) {
-      map(metrics, function(d) {
-        d |> 
-          mutate(lower = mean - 1.96 * std_err, upper = mean + 1.96 * std_err)
-      })
-    })
-  ) |> 
-  select(name, starts_with("best"))
-```
-
-Accuracy:
-
-```{r}
-best_train |> 
-  select(name, best_acc_train) |> 
-  unnest(best_acc_train) |> 
-  filter(.metric == "accuracy") |> 
-  ggplot(aes(x = name, y = mean, color = name)) +
-  geom_hline(yintercept = mlp_metrics_train$accuracy, lty = "dashed", color = "grey") +
-  geom_point() +
-  geom_linerange(aes(ymin = lower, ymax = upper)) +
-  theme_minimal() +
-  labs(
-    title = "Uncertainty of accuracy estimates",
-    subtitle = "Competitor models, training data\nEstimated on 10 folds",
-    x = "",
-    y = "Accuracy",
-    caption = "Bars indicate 95% confidence interval"
-  ) +
-  theme(legend.position = "none") +
-  annotate(
-    "text", 
-    x = 0.67, 
-    y = mlp_metrics_train$accuracy + 0.002, 
-    label = "Neural Network",
-    color = "grey50",
-    size = 4
-  )
-```
-
-Precision (classifying emails as spam, false positives - i.e. mistakenly labeling "ham" emails as spam - are more costly):
-
-```{r}
-best_train |> 
-  select(name, best_prec_train) |> 
-  unnest(best_prec_train) |> 
   filter(.metric == "precision") |> 
-  ggplot(aes(x = name, y = mean, color = name)) +
-  geom_hline(yintercept = mlp_metrics_train$accuracy, lty = "dashed", color = "grey") +
+  arrange(desc(mean)) |> 
+  mutate(
+    # 95% confidence intervals:
+    lower = mean - 1.96 * std_err,
+    upper = mean + 1.96 * std_err
+  ) |> 
+  mutate(rank = row_number()) |> 
+  ggplot(aes(x = rank, y = mean, color = name)) +
   geom_point() +
-  geom_linerange(aes(ymin = lower, ymax = upper)) +
-  theme_minimal() +
-  labs(
-    title = "Uncertainty of precision estimates",
-    subtitle = "Competitor models, training data\nEstimated on 10 folds",
-    x = "",
-    y = "Precision",
-    caption = "Bars indicate 95% confidence interval"
-  ) +
-  theme(legend.position = "none") +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.5) +
+  geom_hline(yintercept = mlp_metrics_train$accuracy, lty = "dashed", color = "grey") +
   annotate(
     "text", 
-    x = 0.67, 
-    y = mlp_metrics_train$accuracy + 0.002, 
+    x = 70, 
+    y = mlp_metrics_train$accuracy + 0.003, 
     label = "Neural Network",
     color = "grey50",
     size = 4
-  )
+  ) +
+  theme_minimal() +
+  labs(
+    title = "Competitors: Tuning Results",
+    subtitle = "Precision, estimated across 10 folds",
+    x = "Model Rank",
+    y = "Precision",
+    color = "Model",
+    caption = "Bars indicate 95% confidence intervals"
+  ) +
+  theme(legend.position = "bottom")
+```
+
+Looks like the random forest has the best chances of performing on par with - or even outperforming - the neural network. Pulling the best hyperparameters:
+
+```{r}
+best_rf_params <- 
+  competitors |> 
+  filter(name == "Random Forest") |> 
+  pull(tuning_res) |> 
+  first() |> 
+  select_best(metric = "precision")
+
+best_rf_params
+```
+
+Fitting the best model to the training set:
+
+```{r}
+rf_fit <- 
+  competitors |> 
+  filter(name == "Random Forest") |> 
+  pull(workflow) |> 
+  first() |> 
+  finalize_workflow(best_rf_params) |> 
+  fit(train)
 ```
 
 ## Final Random forest vs. NN on the train set
 
-Selecting the best competitor models by precision, fitting to train & collecting their metrics on the training set:
-
-```{r}
-train_fits <- 
-  models |> 
-  mutate(
-    last_fit = map2(workflow, tuning_res, function(wf, tune) {
-      wf |> 
-        finalize_workflow(select_best(tune, metric = "precision")) |> 
-        fit(train)
-    }),
-    metrics_train = map(last_fit, function(mod) {
-      mod |> augment(new_data = train) |> class_metrics(truth = spam, estimate = .pred_class)
-    })
-  )
-```
-
-Comparing their performance to that of the neural network:
+Collecting train preds & metrics and comparing to neural network:
 
 ```{r}
 # Some markdown magic:
@@ -656,33 +531,28 @@ mark_best <- function(x) {
   })
 }
 
-train_fits |> 
-  select(name, metrics_train) |> 
-  unnest(metrics_train) |> 
+rf_fit |> 
+  augment(new_data = train) |> 
+  class_metrics(truth = spam, estimate = .pred_class) |> 
   pivot_wider(names_from = ".metric", values_from = ".estimate") |> 
-  select(name, precision, accuracy, f_meas) |> 
+  select(-.estimator) |> 
+  mutate(name = "Random Forest") |> 
   bind_rows(mlp_metrics_train) |> 
+  select(name, precision, recall, f_meas, accuracy) |> 
   mutate(across(-name, mark_best)) |> 
+  arrange(name) |> 
+  rename(f1 = f_meas) |> 
+  rename_with(stringr::str_to_title) |> 
   knitr::kable()
 ```
 
+At first when I saw those metrics I looked a little like this
+
+![](../figures/me_when_99.jpg){width="50%"}
+
+This looks like some overfitting is going on, but given that the model does not seem overly complex (e.g. chose 500 over 1000 trees, low number of randomly sampled predictors, both of which should work against model complexity and overfitting), that it was validated across 10 folds with performance rivaling that of the neural network, and that it still delivers pretty good test performance (see below) I concluded that this was still fine.
 
 # Random Forest vs. Neural Network on test set
-
-```{r}
-rf_res <- models |> filter(name == "Random Forest")
-rf_tuning_res <- rf_res |> pull(tuning_res) |> pluck(1)
-rf_wf <- rf_res |> pull(workflow) |> pluck(1)
-```
-
-Considering the best random forest model by precision (most important metric here):
-
-```{r}
-rf_fit_prec <- 
-  rf_wf |> 
-  finalize_workflow(select_best(rf_tuning_res, metric = "precision")) |>
-  fit(train)
-```
 
 Test predictions for both (plus predicted class probability):
 
@@ -705,9 +575,9 @@ nn_preds <-
   bind_cols(test |> select(actual = spam))
 
 rf_preds <- 
-  rf_fit_prec |> 
+  rf_fit |> 
   predict(test) |> 
-  bind_cols(rf_fit_prec |> predict(test, type = "prob")) |>
+  bind_cols(rf_fit |> predict(test, type = "prob")) |>
   rename(.pred_no_spam = `.pred_no spam`) |> 
   mutate(
     model = "Random Forest",
@@ -736,7 +606,7 @@ test_preds |>
   unnest(metrics) |> 
   rename(f1 = f_meas) |> 
   ungroup() |> 
-  select(model, precision, everything()) |> 
+  select(model, precision, recall, f1, accuracy) |> 
   mutate(across(-model, mark_best)) |> 
   rename_with(stringr::str_to_title) |> 
   knitr::kable()
@@ -786,7 +656,6 @@ confidence |>
   theme(aspect.ratio = .5)
 ```
 
-
 ROC curves:
 
 ```{r}
@@ -812,7 +681,7 @@ test_preds |>
 RF variable importance:
 
 ```{r}
-rf_fit_prec |> 
+rf_fit |> 
   extract_fit_parsnip() |> 
   vip::vi() |> 
   slice(1:10) |> 
@@ -884,7 +753,7 @@ rf_boot <-
     metrics_rf = map(data, function(sample) {
       # This is a workflow object containing the preprocessing pipeline
       # and model that can just take any data directly:
-      rf_fit_prec |> 
+      rf_fit |> 
         augment(new_data = sample) |> 
         class_metrics(truth = spam, estimate = .pred_class) |> 
         select(-.estimator) |> 
