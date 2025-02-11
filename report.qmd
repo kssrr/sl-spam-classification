@@ -29,38 +29,23 @@ The data contained 57 features, and one column denoting the class label (either 
 Exploratory data analysis: investigating class labels, feature correlations & a principal component analysis (training set only; training-validation-testing split was stratified on class label).
 :::
 
-After investigation, I decided on my preprocessing steps: despite class imbalance not being too bad, I decided to use synthetic minority class oversampling (SMOTE) to generate synthetic examples of spam emails and equalize the number of training examples per class. I further log-transformed and normalized all features, dropped highly correlated features ($r > 0.9$ or $r < -0.9$) and features with near-zero variance.
+After investigation, I decided on my preprocessing steps: despite class imbalance not being too bad, I decided to use synthetic minority class oversampling (SMOTE) to generate synthetic examples of spam emails and equalize the number of training examples per class. I further log-transformed and normalized all features, dropped highly correlated features ($r > 0.9$ or $r < -0.9$) and features with near-zero variance (i.e. highly sparse and unbalanced features).
 
 # Methods
 
-The main model is a deep Neural Network with four hidden layers. The hidden layers had 128, 64, 32 & 16 neurons respectively, all using the Rectified Linear Unit (ReLU) activation function and with dropout applied after every layer. The output layer was a one-neuron layer with sigmoid activation function, appropriate for this sort of binary classification task. Hyperparameters are shown in the table below.
-
-::: {#fig-hyperparams}
-
-| Hyperparameter | Value |
-|----------------|-------|
-| Learning rate | 0.001 (scheduled) |
-| Optimizer | Adam |
-| Dropout Rate | 0.25 |
-| Batch size | 32 |
-| Epochs | max. 250 (early stopping) |
-| L2 Regularization | 0.001 |
-
-Hyperparameters
-::: 
-
-Learning rate scheduling was set up to reduce the learning rate by a factor of 0.8 after three epochs of patience[^lr_sched] ("Reduce on Pleateau"). Early stopping would kick in after validation loss has not decreased for five epochs in a row. Binary cross-entropy loss was used as the loss function for training.
-
-[^lr_sched]: I.e. after validation performance did not increase for three successive epochs. This is meant to stabilize training & help the model settle into minima.
+The main model is a deep Neural Network with four hidden layers. The hidden layers had 128, 64, 32 & 16 neurons respectively, all using the Rectified Linear Unit (ReLU) activation function and with dropout applied after every layer. The output layer was a one-neuron layer with sigmoid activation function, appropriate for this sort of binary classification task. The training progression is shown in figure 2.
 
 ::: {#fig-nntrain layout-ncol=2}
-
 ![Loss curves](figures/loss_curves.png)
 
 ![Training curves for different metrics](figures/training_curves.png)
 
 Training process of the deep Neural Network.
 :::
+
+Learning rate scheduling was set up to reduce the learning rate by a factor of 0.8 after three epochs of patience[^lr_sched] ("Reduce on Pleateau"), starting at 0.001. Early stopping would kick in after validation loss has not decreased for five epochs in a row (training was set to run for a maximum of five epochs if early stopping was not triggered). Binary cross-entropy loss was used as the loss function for training. The dropout rate was set to 0.25, I used a batch size of 32, and $L2$-Regularization (0.001).
+
+[^lr_sched]: I.e. after validation performance did not increase for three successive epochs. This is meant to stabilize training & help the model settle into minima.
 
 To select a proper competitor to compare the deep Neural Network against, I evaluated three "traditional" models: a penalized Logistic Regression model, a Gaussian Naive Bayes classifier, and a Random Forest. For all models, I tuned their hyperparameters using regular grid search with ten-fold cross validation [^naive_bayes], and then compared their performance on the training set to that of the Neural Network. Results can be found in figure 4.
 
