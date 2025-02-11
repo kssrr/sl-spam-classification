@@ -833,12 +833,12 @@ boot_res |>
   theme_minimal() +
   labs(
     title = "Precision distribution",
-    subtitle = "across 500 bootstrap resamples",
+    subtitle = "across 1000 bootstrap resamples",
     fill = "Model",
     color = "Model",
     x = "Precision",
     y = "Density",
-    caption = "Wilcoxon rank-sum test results: W = 109741, p = 0.9996\n(no significant shift)"
+    caption = "Wilcoxon rank-sum test results: W = 437392, p = 1\n(no significant shift)"
   )
 ```
 
