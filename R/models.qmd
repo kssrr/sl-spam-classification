@@ -635,6 +635,15 @@ confidence |>
   theme(aspect.ratio = .5)
 ```
 
+Neural network seems overconfident, testing if this difference is significant:
+
+```{r}
+confidence |> 
+  filter(correct == "incorrect") |> 
+  mutate(model = factor(model)) |> 
+  wilcox.test(confidence ~ model, data = _, alternative = "greater")
+```
+
 ROC curves:
 
 ```{r}
@@ -758,7 +767,16 @@ rf_boot <-
   unnest(metrics_rf)
 ```
 
-Evaluating:
+Merging:
+
+```{r}
+boot_res <- 
+  nn_boot |> 
+  select(-c(id, data)) |> 
+  bind_rows(rf_boot |> select(-c(id, data)))
+```
+
+Calculating confidence intervals:
 
 ```{r}
 fns <- list(
@@ -768,22 +786,18 @@ fns <- list(
   upper = \(x) mean(x) + 1.96 * (sd(x) / sqrt(500))
 )
 
-boot_res <- 
-  nn_boot |> 
-  select(-c(id, data)) |> 
-  bind_rows(rf_boot |> select(-c(id, data))) |> 
+conf_ints <- 
+  boot_res |> 
   pivot_longer(-name, names_to = "metric", values_to = "estimate") |> 
   group_by(name, metric) |> 
   summarise(across(estimate, fns, .names = "{fn}")) |> 
   ungroup()
-
-boot_res
 ```
 
 Inspecting graphically:
 
 ```{r}
-boot_res |> 
+conf_ints |> 
   mutate(metric = if_else(metric == "f_meas", "F1", metric) |> stringr::str_to_title()) |> 
   ggplot(aes(x = metric, y = mean, color = name)) +
   geom_point(position = position_dodge(0.1)) +
@@ -795,6 +809,36 @@ boot_res |>
     x = "Metric",
     y = "Estimate",
     color = ""
+  )
+```
+
+Looking at precision in detail. Is the distribution of precision estimates across bootstraps significantly shifted by model?
+
+```{r}
+boot_res |> 
+  mutate(name = factor(name)) |> 
+  wilcox.test(precision ~ name, data = _, alternative = "greater")
+```
+
+Graphically:
+
+```{r}
+boot_res |> 
+  group_by(name) |> 
+  mutate(mean_prec = mean(precision)) |> 
+  ungroup() |> 
+  ggplot(aes(x = precision, color = name, fill = name)) +
+  geom_density(alpha = 0.25) +
+  geom_vline(aes(xintercept = mean_prec, color = name), lty = "dotted", size = 1) +
+  theme_minimal() +
+  labs(
+    title = "Precision distribution",
+    subtitle = "across 500 bootstrap resamples",
+    fill = "Model",
+    color = "Model",
+    x = "Precision",
+    y = "Density",
+    caption = "Wilcox rank-sum test results: W = 109741, p = 0.9996"
   )
 ```
 
