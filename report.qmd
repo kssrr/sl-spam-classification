@@ -77,7 +77,7 @@ Test metrics for the Neural Network and the Random Forest.
 
 ![Distribution of precision estimates across resamples by model](figures/precision_dist.png)
 
-Bootstrap results across 500 resamples.
+Bootstrap results across 1000 resamples.
 :::
 
 Additionally, I examined the models' "confidence" in their classifications by comparing their outputted class probabilities when being correct versus when being wrong. On average, the Neural Network is also overconfident in misclassifications[^wilcox], which might hint at a deeper structural problem. However, examining the ROC curves and the confusion matrices shows just how close together the two models are in terms of performance: the differences in test performance are driven by a very small number of observations.

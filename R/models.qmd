@@ -712,7 +712,7 @@ Given we cannot use `tune::int_pctl()` with the neural network, I am just doing 
 keras3::set_random_seed(42)
 
 test_boot <- 
-  bootstraps(test, times = 500, strata = "spam") |> 
+  bootstraps(test, times = 1000, strata = "spam") |> 
   # no splits, we only want to make predictions:
   mutate(data = map(splits, analysis)) |> 
   select(id, data)
@@ -782,8 +782,8 @@ Calculating confidence intervals:
 fns <- list(
   mean = mean,
   # 95% confidence intervals:
-  lower = \(x) mean(x) - 1.96 * (sd(x) / sqrt(500)), # 500 = n
-  upper = \(x) mean(x) + 1.96 * (sd(x) / sqrt(500))
+  lower = \(x) quantile(x, 0.025),
+  upper = \(x) quantile(x, 0.975)
 )
 
 conf_ints <- 
