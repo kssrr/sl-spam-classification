@@ -838,7 +838,7 @@ boot_res |>
     color = "Model",
     x = "Precision",
     y = "Density",
-    caption = "Wilcox rank-sum test results: W = 109741, p = 0.9996"
+    caption = "Wilcoxon rank-sum test results: W = 109741, p = 0.9996\n(no significant shift)"
   )
 ```
 

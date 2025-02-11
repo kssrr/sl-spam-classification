@@ -123,7 +123,7 @@ Overall, a Deep Learning approach is not neccessary for this use case, and given
 
 # Reflection
 
-I encountered the biggest difficulties trying to set up a proper environment for Deep Learning with R. While I got it to work eventually using the `keras3`-package, parts of it - e.g. using CUDA - would not work properly until the very end, despite the very same GPU being accessible from Python. For this application, this was not a serious shortcoming as the model was not too complex and the amount of data was not too big, but for a more sizeable project this could have been a serious showstopper.
+I encountered the biggest difficulties trying to set up a proper environment for Deep Learning with R. While I eventually got it to work using `keras3`, the experience up until that point was less than subpar, and I kept getting cryptic CUDA-messages, warnings, and errors until the end (the GPU and drivers are perfectly fine and work with Python). While it all turned out fine, the experience felt really wonky compared to Python & I hope that this will be remedied at some point in the future.
 
 Regarding potential improvements to the current approach, it would have been tempting to try out more "traditional" models (e.g. gradient boosted trees), and to explore a larger search space when tuning hyperparameters. Further, dropping highly correlated and all near-zero variance predictors in preprocessing significantly reduces the number of available features and may have been a very drastic step; examining how the models would perform in the presence of these extra predictors would also be interesting, as neither Neural Networks nor Random Forest should struggle with the presence of these.
 
